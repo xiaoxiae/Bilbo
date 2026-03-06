@@ -29,9 +29,8 @@ def cli():
 @click.option("--order", type=click.Choice(["l1-first", "l2-first"]), default="l1-first")
 @click.option("--no-export", is_flag=True, help="Stop after alignment, skip audio export")
 @click.option("--force", is_flag=True, help="Re-run all stages")
-@click.option("--align-padding", type=int, default=None, help="Alignment DP band padding (default 50)")
 @click.option("--batch-size", type=int, default=None, help="Whisper batch size (default: 16)")
-def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, fmt, whisper_model, device, order, no_export, force, align_padding, batch_size):
+def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, fmt, whisper_model, device, order, no_export, force, batch_size):
     """Run the full processing pipeline."""
     from .pipeline import run_pipeline
 
@@ -47,7 +46,6 @@ def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, f
         no_export=no_export,
         export_config=config,
         force=force,
-        align_padding=align_padding,
         batch_size=batch_size,
     )
     click.echo(f"\nBook '{meta.title}' saved as '{meta.slug}'.")

@@ -1,5 +1,9 @@
+# Alignment algorithm inspired by Bertalign (https://github.com/bfsujason/bertalign)
+# Copyright (C) 2021 Jason Li, licensed under GPL-3.0
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -9,11 +13,8 @@ from .models import Alignment, AlignmentPair, SegmentedText
 if TYPE_CHECKING:
     from .log import PipelineLog
 
-# Allowed alignment moves: (src_step, tgt_step)
-# Covers 1:1, 1:2, 2:1, 1:3, 3:1, 2:2
-MOVES = [(1, 1), (1, 2), (2, 1), (1, 3), (3, 1), (2, 2)]
-
-DEFAULT_PADDING = 50
+# All (di, dj) moves for fill-between DP: di in [1..5], dj in [1..5]
+MOVES = [(di, dj) for di in range(1, 6) for dj in range(1, 6)]
 
 
 def _resolve_device(device: str) -> str:
@@ -43,44 +44,125 @@ def _block_similarity(
     return float(block.mean())
 
 
-def _dp_align(
-    l1_emb: np.ndarray, l2_emb: np.ndarray, padding: int
-) -> list[tuple[list[int], list[int]]]:
-    """Frontier-tracking banded DP alignment. Returns list of (src_indices, tgt_indices)."""
+def _find_anchors(
+    l1_emb: np.ndarray,
+    l2_emb: np.ndarray,
+    win: int = 50,
+    skip_penalty: float = 0.0,
+) -> list[tuple[int, int]]:
+    """Pass 1: windowed 1-1 DP to find high-confidence anchor pairs."""
     n = len(l1_emb)
     m = len(l2_emb)
     INF = -1e18
 
-    cost: dict[tuple[int, int], float] = {(0, 0): 0.0}
-    back: dict[tuple[int, int], tuple[int, int]] = {}
-    # Per-row reachable j range: row -> (j_lo, j_hi) inclusive
-    reached: dict[int, tuple[int, int]] = {0: (0, 0)}
+    # Similarity matrix (already L2-normalized)
+    sim = l1_emb @ l2_emb.T  # (n, m)
+
+    # DP table: dp[i][j] = best score aligning l1[:i] with l2[:j]
+    # Transitions from (i, j):
+    #   skip L1: go to (i+1, j) with cost skip_penalty
+    #   skip L2: go to (i, j+1) with cost skip_penalty
+    #   align 1-1: go to (i+1, j+1) with cost sim[i, j]
+    dp = np.full((n + 1, m + 1), INF)
+    dp[0, 0] = 0.0
+    # backpointer: 0=none, 1=skip_l1 (from i-1,j), 2=skip_l2 (from i,j-1), 3=align (from i-1,j-1)
+    back = np.zeros((n + 1, m + 1), dtype=np.int8)
 
     for i in range(n + 1):
-        if i not in reached:
-            continue
-        r_lo, r_hi = reached[i]
-        j_lo = max(0, r_lo - padding)
-        j_hi = min(m, r_hi + padding)
+        # Window: j should be near i * m / n
+        center = int(round(i * m / n)) if n > 0 else 0
+        j_lo = max(0, center - win)
+        j_hi = min(m, center + win)
 
         for j in range(j_lo, j_hi + 1):
-            c = cost.get((i, j), INF)
-            if c == INF:
+            if dp[i, j] == INF:
                 continue
+            val = dp[i, j]
+
+            # Skip L1 (advance i, keep j)
+            if i < n:
+                new_val = val + skip_penalty
+                if new_val > dp[i + 1, j]:
+                    dp[i + 1, j] = new_val
+                    back[i + 1, j] = 1
+
+            # Skip L2 (keep i, advance j)
+            if j < m:
+                new_val = val + skip_penalty
+                if new_val > dp[i, j + 1]:
+                    dp[i, j + 1] = new_val
+                    back[i, j + 1] = 2
+
+            # Align 1-1
+            if i < n and j < m:
+                new_val = val + sim[i, j]
+                if new_val > dp[i + 1, j + 1]:
+                    dp[i + 1, j + 1] = new_val
+                    back[i + 1, j + 1] = 3
+
+    # Backtrace from (n, m)
+    pairs = []
+    ci, cj = n, m
+    while ci > 0 or cj > 0:
+        b = back[ci, cj]
+        if b == 0:
+            break
+        if b == 1:  # skip L1
+            ci -= 1
+        elif b == 2:  # skip L2
+            cj -= 1
+        elif b == 3:  # aligned
+            ci -= 1
+            cj -= 1
+            pairs.append((ci, cj))
+    pairs.reverse()
+
+    if not pairs:
+        return []
+
+    # Filter to high-confidence anchors: sim > mean + 0.5 * std
+    sims = np.array([sim[i, j] for i, j in pairs])
+    threshold = sims.mean() + 0.5 * sims.std()
+    anchors = [(i, j) for (i, j), s in zip(pairs, sims) if s >= threshold]
+
+    return anchors
+
+
+def _fill_between(
+    l1_emb: np.ndarray,
+    l2_emb: np.ndarray,
+    i_start: int,
+    i_end: int,
+    j_start: int,
+    j_end: int,
+) -> list[tuple[list[int], list[int]]]:
+    """Pass 2: small unconstrained m-n DP between two anchor boundaries."""
+    n = i_end - i_start
+    m = j_end - j_start
+
+    if n == 0 or m == 0:
+        return []
+
+    INF = -1e18
+    dp = np.full((n + 1, m + 1), INF)
+    dp[0, 0] = 0.0
+    back = {}
+
+    for i in range(n + 1):
+        for j in range(m + 1):
+            if dp[i, j] == INF:
+                continue
+            val = dp[i, j]
             for di, dj in MOVES:
                 ni, nj = i + di, j + dj
                 if ni > n or nj > m:
                     continue
-                score = c + _block_similarity(l1_emb, l2_emb, i, j, di, dj)
-                if score > cost.get((ni, nj), INF):
-                    cost[(ni, nj)] = score
+                score = val + _block_similarity(
+                    l1_emb, l2_emb, i_start + i, j_start + j, di, dj
+                )
+                if score > dp[ni, nj]:
+                    dp[ni, nj] = score
                     back[(ni, nj)] = (di, dj)
-                    # Expand reached range for target row
-                    if ni in reached:
-                        old_lo, old_hi = reached[ni]
-                        reached[ni] = (min(old_lo, nj), max(old_hi, nj))
-                    else:
-                        reached[ni] = (nj, nj)
 
     # Backtrace
     path = []
@@ -90,13 +172,58 @@ def _dp_align(
             break
         di, dj = back[(ci, cj)]
         pi, pj = ci - di, cj - dj
-        src_idxs = list(range(pi, pi + di))
-        tgt_idxs = list(range(pj, pj + dj))
+        src_idxs = list(range(i_start + pi, i_start + pi + di))
+        tgt_idxs = list(range(j_start + pj, j_start + pj + dj))
         path.append((src_idxs, tgt_idxs))
         ci, cj = pi, pj
 
     path.reverse()
     return path
+
+
+def _two_pass_align(
+    l1_emb: np.ndarray,
+    l2_emb: np.ndarray,
+    on_progress: Callable[[float, float | None], None] | None = None,
+) -> list[tuple[list[int], list[int]]]:
+    """Two-pass alignment: find anchors, then fill between them."""
+    n = len(l1_emb)
+    m = len(l2_emb)
+
+    if on_progress:
+        on_progress(0, 2)
+
+    anchors = _find_anchors(l1_emb, l2_emb)
+
+    if on_progress:
+        on_progress(1, 2)
+
+    # Build boundary list: gaps before first anchor, between anchors, after last anchor
+    boundaries = []
+    prev_i, prev_j = 0, 0
+    for ai, aj in anchors:
+        boundaries.append((prev_i, ai, prev_j, aj))
+        # The anchor itself is a 1:1 pair
+        prev_i = ai + 1
+        prev_j = aj + 1
+    # After last anchor
+    boundaries.append((prev_i, n, prev_j, m))
+
+    result = []
+    for idx, (i_start, i_end, j_start, j_end) in enumerate(boundaries):
+        # Fill the gap
+        filled = _fill_between(l1_emb, l2_emb, i_start, i_end, j_start, j_end)
+        result.extend(filled)
+
+        # If this is not the last boundary, add the anchor pair
+        if idx < len(anchors):
+            ai, aj = anchors[idx]
+            result.append(([ai], [aj]))
+
+    if on_progress:
+        on_progress(2, 2)
+
+    return result
 
 
 def _silence_hf_logging() -> None:
@@ -128,7 +255,6 @@ def align_texts(
     l1: SegmentedText,
     l2: SegmentedText,
     device: str = "cpu",
-    padding: int = DEFAULT_PADDING,
     log: PipelineLog | None = None,
 ) -> Alignment:
     resolved = _resolve_device(device)
@@ -146,9 +272,10 @@ def align_texts(
     l1_emb = all_emb[:len(l1_texts)]
     l2_emb = all_emb[len(l1_texts):]
 
-    if log:
-        log.info(f"Running DP alignment (padding={padding})...")
-    raw_pairs = _dp_align(l1_emb, l2_emb, padding)
+    p = log.progress("Alignment", unit="") if log else None
+    raw_pairs = _two_pass_align(l1_emb, l2_emb, on_progress=p.update if p else None)
+    if p:
+        p.finish(f"{len(raw_pairs)} pairs")
 
     pairs = []
     for src_idxs, tgt_idxs in raw_pairs:
@@ -156,6 +283,4 @@ def align_texts(
         l2_segs = [l2.sentences[i] for i in tgt_idxs]
         pairs.append(AlignmentPair(l1=l1_segs, l2=l2_segs))
 
-    if log:
-        log.done(f"{len(pairs)} pairs")
     return Alignment(pairs=pairs)

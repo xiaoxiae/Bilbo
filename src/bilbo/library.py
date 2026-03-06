@@ -73,6 +73,13 @@ class Library:
             shutil.rmtree(d)
         return True
 
+    def find_slug(self, title: str) -> str | None:
+        """Return existing slug for this title, or None."""
+        slug = _slugify(title) or "book"
+        if slug in self._read_index():
+            return slug
+        return None
+
     def make_slug(self, title: str) -> str:
         slug = _slugify(title)
         if not slug:

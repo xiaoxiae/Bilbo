@@ -51,17 +51,19 @@ def run_pipeline(
     export_config: ExportConfig | None = None,
     force: bool = False,
     library: Library | None = None,
-    align_padding: int | None = None,
     batch_size: int | None = None,
 ) -> BookMeta:
     log = PipelineLog()
     lib = library or Library()
     lib.init()
 
-    slug = lib.make_slug(title)
-    existing = lib.get(slug)
-    if existing and not force:
-        slug = existing.slug
+    existing_slug = lib.find_slug(title)
+    if existing_slug:
+        slug = existing_slug
+        existing = lib.get(slug)
+    else:
+        slug = lib.make_slug(title)
+        existing = None
     book_dir = lib.book_dir(slug)
     book_dir.mkdir(parents=True, exist_ok=True)
     (book_dir / "exports").mkdir(exist_ok=True)
@@ -185,10 +187,7 @@ def run_pipeline(
 
     if force or not align_path.exists():
         from .align import align_texts
-        if align_padding is not None:
-            alignment = align_texts(seg_l1, seg_l2, device=device, padding=align_padding, log=log)
-        else:
-            alignment = align_texts(seg_l1, seg_l2, device=device, log=log)
+        alignment = align_texts(seg_l1, seg_l2, device=device, log=log)
         alignment.save(align_path)
     else:
         log.skip("cached")
