@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
 import click
 
+from .library import Library
+from .log import PipelineLog
 from .models import (
     Alignment,
     BookMeta,
@@ -14,7 +17,6 @@ from .models import (
     SegmentedText,
     Word,
 )
-from .library import Library
 
 
 def _save_raw_segments(segments: list[Segment], path: Path) -> None:
@@ -50,7 +52,9 @@ def run_pipeline(
     force: bool = False,
     library: Library | None = None,
     align_padding: int | None = None,
+    batch_size: int | None = None,
 ) -> BookMeta:
+    log = PipelineLog()
     lib = library or Library()
     lib.init()
 
@@ -72,25 +76,59 @@ def run_pipeline(
     )
 
     # Stage 1: Transcription
+    log.stage(1, "Transcription")
     raw_l1_path = book_dir / "raw_segments_l1.json"
     raw_l2_path = book_dir / "raw_segments_l2.json"
 
-    if force or not raw_l1_path.exists():
-        click.echo("Stage 1: Transcribing L1...")
-        from .transcribe import transcribe
-        raw_l1 = transcribe(l1_audio, l1_lang, model_size, device)
-        _save_raw_segments(raw_l1, raw_l1_path)
-    else:
-        click.echo("Stage 1: L1 transcription exists, skipping.")
-        raw_l1 = _load_raw_segments(raw_l1_path)
+    need_l1 = force or not raw_l1_path.exists()
+    need_l2 = force or not raw_l2_path.exists()
 
-    if force or not raw_l2_path.exists():
-        click.echo("Stage 1: Transcribing L2...")
-        from .transcribe import transcribe
-        raw_l2 = transcribe(l2_audio, l2_lang, model_size, device)
-        _save_raw_segments(raw_l2, raw_l2_path)
+    if need_l1 or need_l2:
+        from .transcribe import transcribe, load_whisper_model
+
+        log.info(f"Loading Whisper model ({model_size}) on {device}...")
+        model = load_whisper_model(model_size, device)
+
+        if need_l1 and need_l2:
+            pp = log.parallel(["L1", "L2"], "Transcribing", unit="s")
+
+            def _transcribe_and_save(audio_path, lang, out_path, label):
+                segs = transcribe(
+                    audio_path, lang, model=model,
+                    batch_size=batch_size, on_progress=pp.callback(label),
+                )
+                _save_raw_segments(segs, out_path)
+                return segs
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                f1 = pool.submit(_transcribe_and_save, l1_audio, l1_lang, raw_l1_path, "L1")
+                f2 = pool.submit(_transcribe_and_save, l2_audio, l2_lang, raw_l2_path, "L2")
+                raw_l1 = f1.result()
+                raw_l2 = f2.result()
+            pp.finish(f"L1: {len(raw_l1)} segments, L2: {len(raw_l2)} segments")
+        elif need_l1:
+            p = log.progress("Transcribing L1", unit="s")
+            raw_l1 = transcribe(
+                l1_audio, l1_lang, model=model,
+                batch_size=batch_size, on_progress=p.update,
+            )
+            _save_raw_segments(raw_l1, raw_l1_path)
+            p.finish(f"{len(raw_l1)} segments")
+            raw_l2 = _load_raw_segments(raw_l2_path)
+        else:
+            raw_l1 = _load_raw_segments(raw_l1_path)
+            p = log.progress("Transcribing L2", unit="s")
+            raw_l2 = transcribe(
+                l2_audio, l2_lang, model=model,
+                batch_size=batch_size, on_progress=p.update,
+            )
+            _save_raw_segments(raw_l2, raw_l2_path)
+            p.finish(f"{len(raw_l2)} segments")
+
+        del model
     else:
-        click.echo("Stage 1: L2 transcription exists, skipping.")
+        log.skip("cached")
+        raw_l1 = _load_raw_segments(raw_l1_path)
         raw_l2 = _load_raw_segments(raw_l2_path)
 
     if 1 not in meta.stages_completed:
@@ -98,44 +136,62 @@ def run_pipeline(
     lib.add_or_update(meta)
 
     # Stage 2: Segmentation
+    log.stage(2, "Segmentation")
     seg_l1_path = book_dir / "segments_l1.json"
     seg_l2_path = book_dir / "segments_l2.json"
 
-    if force or not seg_l1_path.exists():
-        click.echo("Stage 2: Segmenting L1...")
-        from .segment import segment_text
-        seg_l1 = segment_text(raw_l1, l1_lang)
-        seg_l1.save(seg_l1_path)
-    else:
-        click.echo("Stage 2: L1 segmentation exists, skipping.")
-        seg_l1 = SegmentedText.load(seg_l1_path)
+    need_seg_l1 = force or not seg_l1_path.exists()
+    need_seg_l2 = force or not seg_l2_path.exists()
 
-    if force or not seg_l2_path.exists():
-        click.echo("Stage 2: Segmenting L2...")
-        from .segment import segment_text
-        seg_l2 = segment_text(raw_l2, l2_lang)
-        seg_l2.save(seg_l2_path)
-    else:
-        click.echo("Stage 2: L2 segmentation exists, skipping.")
+    if not need_seg_l1 and not need_seg_l2:
+        log.skip("cached")
+        seg_l1 = SegmentedText.load(seg_l1_path)
         seg_l2 = SegmentedText.load(seg_l2_path)
+    else:
+        from .segment import segment_text
+
+        def _segment_and_save(raw_segs, lang, out_path):
+            result = segment_text(raw_segs, lang)
+            result.save(out_path)
+            return result
+
+        if need_seg_l1 and need_seg_l2:
+            log.info("Segmenting L1 + L2 in parallel...")
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                f1 = pool.submit(_segment_and_save, raw_l1, l1_lang, seg_l1_path)
+                f2 = pool.submit(_segment_and_save, raw_l2, l2_lang, seg_l2_path)
+                seg_l1 = f1.result()
+                seg_l2 = f2.result()
+            log.done(f"L1: {len(seg_l1.sentences)} sentences, L2: {len(seg_l2.sentences)} sentences")
+        elif need_seg_l1:
+            log.info("Segmenting L1...")
+            seg_l1 = _segment_and_save(raw_l1, l1_lang, seg_l1_path)
+            log.done(f"L1: {len(seg_l1.sentences)} sentences")
+            seg_l2 = SegmentedText.load(seg_l2_path)
+        else:
+            raw_l1 = _load_raw_segments(raw_l1_path)
+            seg_l1 = SegmentedText.load(seg_l1_path)
+            log.info("Segmenting L2...")
+            seg_l2 = _segment_and_save(raw_l2, l2_lang, seg_l2_path)
+            log.done(f"L2: {len(seg_l2.sentences)} sentences")
 
     if 2 not in meta.stages_completed:
         meta.stages_completed.append(2)
     lib.add_or_update(meta)
 
     # Stage 3: Alignment
+    log.stage(3, "Alignment")
     align_path = book_dir / "alignment.json"
 
     if force or not align_path.exists():
-        click.echo("Stage 3: Aligning...")
         from .align import align_texts
         if align_padding is not None:
-            alignment = align_texts(seg_l1, seg_l2, device=device, padding=align_padding)
+            alignment = align_texts(seg_l1, seg_l2, device=device, padding=align_padding, log=log)
         else:
-            alignment = align_texts(seg_l1, seg_l2, device=device)
+            alignment = align_texts(seg_l1, seg_l2, device=device, log=log)
         alignment.save(align_path)
     else:
-        click.echo("Stage 3: Alignment exists, skipping.")
+        log.skip("cached")
         alignment = Alignment.load(align_path)
 
     if 3 not in meta.stages_completed:
@@ -144,16 +200,16 @@ def run_pipeline(
 
     # Stage 4: Export
     if no_export:
-        click.echo("Skipping export (--no-export).")
+        log.info("Skipping export (--no-export).")
         return meta
 
     config = export_config or ExportConfig()
-    click.echo("Stage 4: Assembling...")
+    log.stage(4, "Assembly")
     from .assemble import assemble
 
     output_name = f"interleaved.{config.format}"
     output_path = book_dir / "exports" / output_name
-    assemble(alignment, l1_audio, l2_audio, config, output_path)
+    assemble(alignment, l1_audio, l2_audio, config, output_path, log=log)
 
     if output_name not in meta.exports:
         meta.exports.append(output_name)
@@ -169,6 +225,7 @@ def run_export(
     config: ExportConfig,
     library: Library | None = None,
 ) -> None:
+    log = PipelineLog()
     lib = library or Library()
     meta = lib.get(slug)
     if meta is None:
@@ -194,8 +251,8 @@ def run_export(
     output_name = f"interleaved.{config.format}"
     output_path = book_dir / "exports" / output_name
 
-    click.echo(f"Exporting '{meta.title}'...")
-    assemble(alignment, l1_audio, l2_audio, config, output_path)
+    log.stage(4, "Assembly")
+    assemble(alignment, l1_audio, l2_audio, config, output_path, log=log)
 
     if output_name not in meta.exports:
         meta.exports.append(output_name)

@@ -1,10 +1,25 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-
-import click
+from typing import TYPE_CHECKING
 
 from .models import Segment, Word
+
+if TYPE_CHECKING:
+    from faster_whisper import BatchedInferencePipeline
+
+
+def load_whisper_model(
+    model_size: str = "large-v3-turbo",
+    device: str = "auto",
+) -> BatchedInferencePipeline:
+    from faster_whisper import BatchedInferencePipeline as _BatchedPipeline
+    from faster_whisper import WhisperModel as _WhisperModel
+
+    compute_type = "int8" if device == "cpu" else "float16"
+    whisper = _WhisperModel(model_size, device=device, compute_type=compute_type)
+    return _BatchedPipeline(whisper)
 
 
 def transcribe(
@@ -12,20 +27,23 @@ def transcribe(
     lang: str,
     model_size: str = "large-v3-turbo",
     device: str = "auto",
+    model: BatchedInferencePipeline | None = None,
+    batch_size: int | None = None,
+    on_progress: Callable[[float, float | None], None] | None = None,
 ) -> list[Segment]:
-    from faster_whisper import WhisperModel
+    if model is None:
+        model = load_whisper_model(model_size, device)
 
-    click.echo(f"  Loading Whisper model ({model_size}) on {device}...")
-    compute_type = "int8" if device == "cpu" else "float16"
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+    if batch_size is None:
+        batch_size = 16
 
-    click.echo(f"  Transcribing {audio_path.name} ({lang})...")
     segments_iter, info = model.transcribe(
         str(audio_path),
         language=lang,
         beam_size=5,
         vad_filter=True,
         word_timestamps=True,
+        batch_size=batch_size,
     )
 
     duration = info.duration
@@ -35,8 +53,7 @@ def transcribe(
         if seg.words:
             words = [Word(start=w.start, end=w.end, word=w.word.strip()) for w in seg.words]
         segments.append(Segment(start=seg.start, end=seg.end, text=seg.text.strip(), words=words))
-        pct = min(100, seg.end / duration * 100) if duration > 0 else 0
-        click.echo(f"\r  Transcribing: {pct:5.1f}% ({seg.end:.0f}/{duration:.0f}s)", nl=False)
+        if on_progress:
+            on_progress(seg.end, duration)
 
-    click.echo(f"\r  Transcribed {len(segments)} segments ({duration:.0f}s audio)        ")
     return segments

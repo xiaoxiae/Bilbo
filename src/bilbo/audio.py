@@ -1,65 +1,109 @@
 from __future__ import annotations
 
+import subprocess
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-import pyloudnorm
-
 
 TARGET_LUFS = -16.0
 
 
-def load_audio(path: Path) -> tuple[np.ndarray, int]:
+def _probe_duration(path: Path) -> float | None:
+    """Get audio duration in seconds via ffprobe."""
     try:
-        data, sr = sf.read(str(path), dtype="float64", always_2d=True)
-        return data, sr
-    except sf.LibsndfileError:
-        pass
-    # Fallback: decode via ffmpeg to WAV in memory
-    import subprocess
-    result = subprocess.run(
-        ["ffmpeg", "-i", str(path), "-f", "wav", "-acodec", "pcm_s16le", "-"],
-        capture_output=True,
-        check=True,
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return float(result.stdout.strip())
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+
+
+def preprocess_audio(
+    input_path: Path,
+    target_sr: int = 24000,
+    target_lufs: float = TARGET_LUFS,
+    on_progress: Callable[[float, float | None], None] | None = None,
+) -> Path:
+    """Resample + LUFS-normalize via ffmpeg in a single streaming pass.
+
+    Returns path to a temporary WAV file (float32, random-access compatible).
+    Caller is responsible for cleanup.
+
+    If *on_progress* is provided, it is called with (current_secs, total_secs | None)
+    on each ffmpeg progress update.
+    """
+    import os
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+    os.close(tmp_fd)
+
+    duration = _probe_duration(input_path)
+
+    proc = subprocess.Popen(
+        [
+            "ffmpeg", "-y", "-i", str(input_path),
+            "-ar", str(target_sr),
+            "-af", f"loudnorm=I={target_lufs}:LRA=11:TP=-1.5",
+            "-f", "wav", "-acodec", "pcm_f32le",
+            "-progress", "pipe:1", "-nostats",
+            tmp_path,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
-    import io
-    data, sr = sf.read(io.BytesIO(result.stdout), dtype="float64", always_2d=True)
-    return data, sr
 
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.strip()
+        if line.startswith("out_time_us="):
+            try:
+                us = int(line.split("=", 1)[1])
+            except ValueError:
+                continue
+            secs = us / 1_000_000
+            if on_progress is not None:
+                on_progress(secs, duration)
 
-def resample(data: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
-    if orig_sr == target_sr:
-        return data
-    from scipy.signal import resample as scipy_resample
-    num_samples = int(len(data) * target_sr / orig_sr)
-    return scipy_resample(data, num_samples)
+    proc.wait()
+    if proc.returncode != 0:
+        stderr = proc.stderr.read() if proc.stderr else ""
+        raise subprocess.CalledProcessError(proc.returncode, "ffmpeg", stderr=stderr)
+
+    return Path(tmp_path)
 
 
 def slice_audio(
-    data: np.ndarray,
+    path: Path,
     sr: int,
     start: float,
     end: float,
     padding_ms: float = 75,
 ) -> np.ndarray:
+    """Read only the needed slice from a WAV file (random-access, no full load)."""
     pad_s = padding_ms / 1000.0
-    s = max(0, int((start - pad_s) * sr))
-    e = min(len(data), int((end + pad_s) * sr))
-    return data[s:e]
+    info = sf.info(str(path))
+    total_frames = info.frames
 
+    frame_s = max(0, int((start - pad_s) * sr))
+    frame_e = min(total_frames, int((end + pad_s) * sr))
+    if frame_e <= frame_s:
+        return np.zeros((0, info.channels), dtype=np.float32)
 
-def normalize_lufs(data: np.ndarray, sr: int, target: float = TARGET_LUFS) -> np.ndarray:
-    if len(data) == 0:
-        return data
-    meter = pyloudnorm.Meter(sr)
-    try:
-        loudness = meter.integrated_loudness(data)
-    except ValueError:
-        return data
-    if np.isinf(loudness):
-        return data
-    return pyloudnorm.normalize.loudness(data, loudness, target)
+    data, _ = sf.read(str(path), start=frame_s, stop=frame_e, dtype="float32", always_2d=True)
+    return data
 
 
 def crossfade(a: np.ndarray, b: np.ndarray, ms: int = 30) -> np.ndarray:
@@ -70,26 +114,40 @@ def crossfade(a: np.ndarray, b: np.ndarray, ms: int = 30) -> np.ndarray:
     samples = min(ms * 48, len(a), len(b))  # approximate, assumes <=48kHz
     if samples < 2:
         return np.concatenate([a, b])
-    fade_out = np.linspace(1.0, 0.0, samples).reshape(-1, 1)
-    fade_in = np.linspace(0.0, 1.0, samples).reshape(-1, 1)
+    fade_out = np.linspace(1.0, 0.0, samples, dtype=np.float32).reshape(-1, 1)
+    fade_in = np.linspace(0.0, 1.0, samples, dtype=np.float32).reshape(-1, 1)
     overlap = a[-samples:] * fade_out + b[:samples] * fade_in
     return np.concatenate([a[:-samples], overlap, b[samples:]])
 
 
 def generate_silence(sr: int, ms: int, channels: int = 2) -> np.ndarray:
     samples = int(sr * ms / 1000)
-    return np.zeros((samples, channels))
+    return np.zeros((samples, channels), dtype=np.float32)
+
+
+def apply_fade(chunk: np.ndarray, sr: int, fade_ms: int = 5) -> np.ndarray:
+    """Apply short fade-in and fade-out to a chunk to avoid clicks."""
+    if len(chunk) == 0:
+        return chunk
+    fade_samples = min(int(sr * fade_ms / 1000), len(chunk) // 2)
+    if fade_samples < 2:
+        return chunk
+    chunk = chunk.copy()
+    fade_in = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32).reshape(-1, 1)
+    fade_out = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
+    chunk[:fade_samples] *= fade_in
+    chunk[-fade_samples:] *= fade_out
+    return chunk
 
 
 def export_audio(data: np.ndarray, sr: int, path: Path, fmt: str = "m4b") -> None:
     tmp = path.with_suffix(".tmp.wav")
-    sf.write(str(tmp), data, sr)
+    sf.write(str(tmp), data, sr, subtype="FLOAT")
 
     if fmt == "wav":
         tmp.rename(path)
         return
 
-    import subprocess
     codec = "aac" if fmt == "m4b" else "libmp3lame"
     ext = f".{fmt}"
     out = path.with_suffix(ext)

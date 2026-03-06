@@ -1,40 +1,41 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import click
 import numpy as np
+import soundfile as sf
 
 from .audio import (
-    crossfade,
+    apply_fade,
     export_audio,
     generate_silence,
-    load_audio,
-    normalize_lufs,
-    resample,
+    preprocess_audio,
     slice_audio,
 )
-from .models import Alignment, AlignmentPair, ExportConfig, SegmentedText
+from .models import Alignment, AlignmentPair, ExportConfig
+
+if TYPE_CHECKING:
+    from .log import PipelineLog
 
 
 def _extract_chunk(
-    pairs: list[AlignmentPair],
-    audio_data: np.ndarray,
+    pair: AlignmentPair,
+    audio_path: Path,
     sr: int,
     lang: str,
     config: ExportConfig,
 ) -> np.ndarray:
-    segs = []
-    for p in pairs:
-        segs.extend(p.l1 if lang == "l1" else p.l2)
+    segs = pair.l1 if lang == "l1" else pair.l2
 
     if not segs:
-        return np.zeros((0, audio_data.shape[1] if audio_data.ndim > 1 else 1))
+        info = sf.info(str(audio_path))
+        return np.zeros((0, info.channels), dtype=np.float32)
 
-    # Take one continuous slice from first segment start to last segment end
     start = min(s.start for s in segs)
     end = max(s.end for s in segs)
-    return slice_audio(audio_data, sr, start, end, config.padding_ms)
+    return slice_audio(audio_path, sr, start, end, config.padding_ms)
 
 
 def assemble(
@@ -43,66 +44,74 @@ def assemble(
     l2_audio_path: Path,
     config: ExportConfig,
     output_path: Path,
+    log: PipelineLog | None = None,
 ) -> None:
-    click.echo(f"  Loading audio files...")
-    l1_data, l1_sr = load_audio(l1_audio_path)
-    l2_data, l2_sr = load_audio(l2_audio_path)
+    target_sr = 24000
 
-    # Resample to common sample rate
-    sr = max(l1_sr, l2_sr)
-    if l1_sr != sr:
-        click.echo(f"  Resampling L1 from {l1_sr}Hz to {sr}Hz...")
-        l1_data = resample(l1_data, l1_sr, sr)
-    if l2_sr != sr:
-        click.echo(f"  Resampling L2 from {l2_sr}Hz to {sr}Hz...")
-        l2_data = resample(l2_data, l2_sr, sr)
+    pp = log.parallel(["L1", "L2"], "Preprocessing", unit="s") if log else None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(
+            preprocess_audio, l1_audio_path, target_sr,
+            on_progress=pp.callback("L1") if pp else None,
+        )
+        f2 = pool.submit(
+            preprocess_audio, l2_audio_path, target_sr,
+            on_progress=pp.callback("L2") if pp else None,
+        )
+        l1_wav = f1.result()
+        l2_wav = f2.result()
 
-    channels = max(
-        l1_data.shape[1] if l1_data.ndim > 1 else 1,
-        l2_data.shape[1] if l2_data.ndim > 1 else 1,
-    )
+    try:
+        l1_info = sf.info(str(l1_wav))
+        sr = l1_info.samplerate
+        channels = l1_info.channels
 
-    click.echo(f"  Normalizing audio levels...")
-    l1_data = normalize_lufs(l1_data, sr)
-    l2_data = normalize_lufs(l2_data, sr)
+        if pp:
+            l2_info = sf.info(str(l2_wav))
+            l1_dur = l1_info.frames / sr
+            l2_dur = l2_info.frames / sr
+            pp.finish(f"Preprocessed (L1: {l1_dur:.0f}s, L2: {l2_dur:.0f}s)")
 
-    pairs = alignment.pairs
-    click.echo(f"  Assembling {len(pairs)} pairs...")
+        pairs = alignment.pairs
+        p = log.progress("Assembling") if log else None
 
-    intra_gap = generate_silence(sr, config.intra_gap_ms, channels)
-    inter_gap = generate_silence(sr, config.inter_gap_ms, channels)
+        intra_gap = generate_silence(sr, config.intra_gap_ms, channels)
+        inter_gap = generate_silence(sr, config.inter_gap_ms, channels)
 
-    first_lang, second_lang = ("l1", "l2") if config.order == "l1-first" else ("l2", "l1")
-    first_data = l1_data if first_lang == "l1" else l2_data
-    second_data = l2_data if first_lang == "l1" else l1_data
+        first_lang, second_lang = ("l1", "l2") if config.order == "l1-first" else ("l2", "l1")
+        first_wav = l1_wav if first_lang == "l1" else l2_wav
+        second_wav = l2_wav if first_lang == "l1" else l1_wav
 
-    all_parts = []
-    for pi, pair in enumerate(pairs):
-        chunk1 = _extract_chunk([pair], first_data, sr, first_lang, config)
-        chunk2 = _extract_chunk([pair], second_data, sr, second_lang, config)
+        all_parts: list[np.ndarray] = []
+        for pi, pair in enumerate(pairs):
+            chunk1 = apply_fade(_extract_chunk(pair, first_wav, sr, first_lang, config), sr)
+            chunk2 = apply_fade(_extract_chunk(pair, second_wav, sr, second_lang, config), sr)
 
-        if len(chunk1) > 0:
-            all_parts.append(chunk1)
-        if len(chunk1) > 0 and len(chunk2) > 0:
-            all_parts.append(intra_gap)
-        if len(chunk2) > 0:
-            all_parts.append(chunk2)
-        if pi < len(pairs) - 1:
-            all_parts.append(inter_gap)
+            if len(chunk1) > 0:
+                all_parts.append(chunk1)
+            if len(chunk1) > 0 and len(chunk2) > 0:
+                all_parts.append(intra_gap)
+            if len(chunk2) > 0:
+                all_parts.append(chunk2)
+            if pi < len(pairs) - 1:
+                all_parts.append(inter_gap)
 
-        if (pi + 1) % 50 == 0 or pi == len(pairs) - 1:
-            click.echo(f"    {pi + 1}/{len(pairs)} pairs done")
+            if p:
+                p.update(pi + 1, len(pairs))
 
-    if not all_parts:
-        click.echo("  Warning: no audio content to assemble")
-        return
+        if not all_parts:
+            if log:
+                log.warn("no audio content to assemble")
+            return
 
-    click.echo(f"  Concatenating...")
-    result = all_parts[0]
-    for p in all_parts[1:]:
-        result = crossfade(result, p, config.crossfade_ms)
+        if log:
+            log.info(f"Exporting {output_path.name}...")
+        result = np.concatenate(all_parts)
+        export_audio(result, sr, output_path, config.format)
+        duration = len(result) / sr
+        if log:
+            log.done(f"{duration / 60:.1f} minutes")
 
-    click.echo(f"  Exporting to {output_path.name}...")
-    export_audio(result, sr, output_path, config.format)
-    duration = len(result) / sr
-    click.echo(f"  Done! Output: {duration / 60:.1f} minutes")
+    finally:
+        l1_wav.unlink(missing_ok=True)
+        l2_wav.unlink(missing_ok=True)

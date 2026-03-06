@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-import click
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from .models import Alignment, AlignmentPair, SegmentedText
+
+if TYPE_CHECKING:
+    from .log import PipelineLog
 
 # Allowed alignment moves: (src_step, tgt_step)
 # Covers 1:1, 1:2, 2:1, 1:3, 3:1, 2:2
@@ -18,14 +22,6 @@ def _resolve_device(device: str) -> str:
     import torch
     return "cuda" if torch.cuda.is_available() else "cpu"
 
-
-def _embed(texts: list[str], device: str = "cpu") -> np.ndarray:
-    from sentence_transformers import SentenceTransformer
-
-    device = _resolve_device(device)
-    model = SentenceTransformer("sentence-transformers/LaBSE", device=device)
-    embeddings = model.encode(texts, show_progress_bar=False, convert_to_numpy=True)
-    return embeddings
 
 
 def _normalize(emb: np.ndarray) -> np.ndarray:
@@ -103,22 +99,55 @@ def _dp_align(
     return path
 
 
+def _silence_hf_logging() -> None:
+    """Suppress noisy output from the HuggingFace / transformers stack.
+
+    Loading a SentenceTransformer model produces three kinds of spam:
+    1. "Warning: You are sending unauthenticated requests to the HF Hub" —
+       emitted by huggingface_hub's HTTP layer when it sees an X-HF-Warning
+       response header.  Silenced via hf_hub's own verbosity API.
+    2. "BertModel LOAD REPORT … embeddings.position_ids UNEXPECTED" —
+       emitted by transformers' state-dict loader when checkpoint keys don't
+       match the model 1:1 (harmless for LaBSE).  Silenced via transformers'
+       verbosity API.
+    3. "Loading weights: 100%" tqdm bar — transformers wraps safetensors
+       loading in its own tqdm.  Silenced via transformers' progress-bar toggle.
+    """
+    import logging
+
+    import huggingface_hub.utils.logging as hf_logging
+    import transformers.utils.logging as tf_logging
+
+    logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+    hf_logging.set_verbosity_error()
+    tf_logging.set_verbosity_error()
+    tf_logging.disable_progress_bar()
+
+
 def align_texts(
     l1: SegmentedText,
     l2: SegmentedText,
     device: str = "cpu",
     padding: int = DEFAULT_PADDING,
+    log: PipelineLog | None = None,
 ) -> Alignment:
     resolved = _resolve_device(device)
-    click.echo(f"  Computing sentence embeddings (LaBSE) on {resolved}...")
+    if log:
+        log.info(f"Computing embeddings (LaBSE) on {resolved}...")
 
     l1_texts = [s.text for s in l1.sentences]
     l2_texts = [s.text for s in l2.sentences]
 
-    l1_emb = _normalize(_embed(l1_texts, device=device))
-    l2_emb = _normalize(_embed(l2_texts, device=device))
+    from sentence_transformers import SentenceTransformer
 
-    click.echo(f"  Running banded DP alignment (padding={padding})...")
+    _silence_hf_logging()
+    model = SentenceTransformer("sentence-transformers/LaBSE", device=_resolve_device(device))
+    all_emb = _normalize(model.encode(l1_texts + l2_texts, show_progress_bar=False, convert_to_numpy=True))
+    l1_emb = all_emb[:len(l1_texts)]
+    l2_emb = all_emb[len(l1_texts):]
+
+    if log:
+        log.info(f"Running DP alignment (padding={padding})...")
     raw_pairs = _dp_align(l1_emb, l2_emb, padding)
 
     pairs = []
@@ -127,5 +156,6 @@ def align_texts(
         l2_segs = [l2.sentences[i] for i in tgt_idxs]
         pairs.append(AlignmentPair(l1=l1_segs, l2=l2_segs))
 
-    click.echo(f"  Aligned into {len(pairs)} pairs")
+    if log:
+        log.done(f"{len(pairs)} pairs")
     return Alignment(pairs=pairs)

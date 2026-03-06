@@ -1,20 +1,27 @@
 import numpy as np
+import soundfile as sf
 
-from bilbo.audio import crossfade, generate_silence, normalize_lufs, slice_audio
+from bilbo.audio import crossfade, generate_silence, slice_audio
 
 
-def test_slice_audio():
+def test_slice_audio(tmp_path):
     sr = 16000
-    data = np.random.randn(sr * 10, 2)  # 10 seconds
-    chunk = slice_audio(data, sr, 2.0, 3.0, padding_ms=0)
+    data = np.random.randn(sr * 10, 2).astype(np.float32)
+    wav_path = tmp_path / "test.wav"
+    sf.write(str(wav_path), data, sr)
+
+    chunk = slice_audio(wav_path, sr, 2.0, 3.0, padding_ms=0)
     expected_len = sr  # 1 second
     assert abs(len(chunk) - expected_len) < 2
 
 
-def test_slice_audio_with_padding():
+def test_slice_audio_with_padding(tmp_path):
     sr = 16000
-    data = np.random.randn(sr * 10, 2)
-    chunk = slice_audio(data, sr, 2.0, 3.0, padding_ms=100)
+    data = np.random.randn(sr * 10, 2).astype(np.float32)
+    wav_path = tmp_path / "test.wav"
+    sf.write(str(wav_path), data, sr)
+
+    chunk = slice_audio(wav_path, sr, 2.0, 3.0, padding_ms=100)
     # 1 second + 200ms padding
     assert len(chunk) > sr
 
@@ -26,22 +33,15 @@ def test_generate_silence():
 
 
 def test_crossfade_basic():
-    a = np.ones((1000, 2))
-    b = np.ones((1000, 2)) * 0.5
+    a = np.ones((1000, 2), dtype=np.float32)
+    b = np.ones((1000, 2), dtype=np.float32) * 0.5
     result = crossfade(a, b, ms=10)
     assert len(result) < len(a) + len(b)
     assert len(result) > 0
 
 
 def test_crossfade_empty():
-    a = np.ones((1000, 2))
-    b = np.zeros((0, 2))
+    a = np.ones((1000, 2), dtype=np.float32)
+    b = np.zeros((0, 2), dtype=np.float32)
     assert np.array_equal(crossfade(a, b), a)
     assert np.array_equal(crossfade(b, a), a)
-
-
-def test_normalize_lufs():
-    sr = 44100
-    data = np.random.randn(sr * 2, 2) * 0.1
-    result = normalize_lufs(data, sr)
-    assert result.shape == data.shape

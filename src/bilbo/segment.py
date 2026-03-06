@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-import click
+from typing import TYPE_CHECKING
+
 import pysbd
 
 from .models import Segment, SegmentedText, Word
+
+if TYPE_CHECKING:
+    from .log import PipelineLog
 
 
 def _words_to_sentences(
@@ -62,8 +66,10 @@ def _words_to_sentences(
 def segment_text(
     raw_segments: list[Segment],
     lang: str,
+    log: PipelineLog | None = None,
 ) -> SegmentedText:
-    click.echo(f"  Segmenting into sentences ({lang})...")
+    if log:
+        log.info(f"Segmenting {lang}...")
 
     # Flatten all words from raw segments
     all_words = []
@@ -72,11 +78,13 @@ def segment_text(
 
     if not all_words:
         # Fallback: if no word-level timestamps, create one word per segment
-        click.echo("  Warning: no word-level timestamps, using segment-level fallback")
+        if log:
+            log.warn("no word-level timestamps, using segment-level fallback")
         all_words = [Word(start=seg.start, end=seg.end, word=seg.text) for seg in raw_segments]
 
     sentences = _words_to_sentences(all_words, lang)
 
-    click.echo(f"  {len(sentences)} sentences")
+    if log:
+        log.info(f"{lang}: {len(sentences)} sentences")
 
     return SegmentedText(sentences=sentences)
