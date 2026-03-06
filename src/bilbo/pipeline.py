@@ -19,6 +19,9 @@ from .models import (
 )
 
 
+_LOW_SCORE_THRESHOLD = 0.3
+
+
 def _export_alignment_text(alignment: Alignment, output_path: Path) -> None:
     lines: list[str] = []
     for pair in alignment.pairs:
@@ -28,6 +31,8 @@ def _export_alignment_text(alignment: Alignment, output_path: Path) -> None:
         l1_end = pair.l1[-1].end
         l2_start = pair.l2[0].start
         l2_end = pair.l2[-1].end
+        marker = " !!!" if pair.score < _LOW_SCORE_THRESHOLD else ""
+        lines.append(f"[{pair.score:.2f}]{marker}")
         lines.append(f"L1 ({l1_start:.2f}-{l1_end:.2f}): {l1_text}")
         lines.append(f"L2 ({l2_start:.2f}-{l2_end:.2f}): {l2_text}")
         lines.append("")
@@ -209,6 +214,13 @@ def run_pipeline(
     else:
         log.skip("cached")
         alignment = Alignment.load(align_path)
+
+    low_pairs = [p for p in alignment.pairs if p.score < _LOW_SCORE_THRESHOLD]
+    if low_pairs:
+        total_dur = sum(p.l1[-1].end - p.l1[0].start + p.l2[-1].end - p.l2[0].start for p in alignment.pairs)
+        low_dur = sum(p.l1[-1].end - p.l1[0].start + p.l2[-1].end - p.l2[0].start for p in low_pairs)
+        pct = low_dur / total_dur * 100 if total_dur > 0 else 0
+        log.warn(f"{len(low_pairs)}/{len(alignment.pairs)} pairs misaligned ({pct:.1f}% of audio)")
 
     if 3 not in meta.stages_completed:
         meta.stages_completed.append(3)

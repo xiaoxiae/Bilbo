@@ -25,14 +25,19 @@ def _words_to_sentences(
 
     full_text = " ".join(w.word for w in words)
 
+    # Replace guillemets with ASCII quotes so pySBD treats them as sentence
+    # boundaries (it recognizes "..." but not «...»). Since «, », and " are
+    # each one Unicode code point, character offsets are preserved.
+    seg_text = full_text.replace("«", '"').replace("»", '"')
+
     segmenter = pysbd.Segmenter(language=lang, clean=False, char_span=True)
-    spans = segmenter.segment(full_text)
+    spans = segmenter.segment(seg_text)
 
     sentences: list[Segment] = []
     wi = 0  # forward word pointer
 
     for span in spans:
-        text = span.sent.strip()
+        text = full_text[span.start:span.end].strip()
         if not text:
             continue
 

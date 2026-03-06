@@ -49,6 +49,7 @@ class SegmentedText:
 class AlignmentPair:
     l1: list[Segment]
     l2: list[Segment]
+    score: float = 0.0
 
 
 @dataclass
@@ -57,7 +58,7 @@ class Alignment:
 
     def save(self, path: Path) -> None:
         tmp = path.with_suffix(".tmp")
-        data = [{"l1": [asdict(s) for s in p.l1], "l2": [asdict(s) for s in p.l2]} for p in self.pairs]
+        data = [{"l1": [asdict(s) for s in p.l1], "l2": [asdict(s) for s in p.l2], "score": p.score} for p in self.pairs]
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
         tmp.rename(path)
 
@@ -74,6 +75,7 @@ class Alignment:
                     start=s["start"], end=s["end"], text=s["text"],
                     words=[Word(**w) for w in s.get("words", [])],
                 ) for s in p["l2"]],
+                score=p.get("score", 0.0),
             )
             for p in data
         ]

@@ -13,8 +13,8 @@ from .models import Alignment, AlignmentPair, SegmentedText
 if TYPE_CHECKING:
     from .log import PipelineLog
 
-# All (di, dj) moves for fill-between DP: di in [1..5], dj in [1..5]
-MOVES = [(di, dj) for di in range(1, 6) for dj in range(1, 6)]
+# Allowed (di, dj) moves for fill-between DP
+MOVES = [(1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (2, 3), (3, 1), (3, 2)]
 
 
 def _resolve_device(device: str) -> str:
@@ -135,7 +135,7 @@ def _fill_between(
     i_end: int,
     j_start: int,
     j_end: int,
-) -> list[tuple[list[int], list[int]]]:
+) -> list[tuple[list[int], list[int], float]]:
     """Pass 2: small unconstrained m-n DP between two anchor boundaries."""
     n = i_end - i_start
     m = j_end - j_start
@@ -157,9 +157,10 @@ def _fill_between(
                 ni, nj = i + di, j + dj
                 if ni > n or nj > m:
                     continue
-                score = val + _block_similarity(
+                sim = _block_similarity(
                     l1_emb, l2_emb, i_start + i, j_start + j, di, dj
                 )
+                score = val + sim * (di + dj)
                 if score > dp[ni, nj]:
                     dp[ni, nj] = score
                     back[(ni, nj)] = (di, dj)
@@ -174,7 +175,10 @@ def _fill_between(
         pi, pj = ci - di, cj - dj
         src_idxs = list(range(i_start + pi, i_start + pi + di))
         tgt_idxs = list(range(j_start + pj, j_start + pj + dj))
-        path.append((src_idxs, tgt_idxs))
+        pair_score = _block_similarity(
+            l1_emb, l2_emb, i_start + pi, j_start + pj, di, dj
+        )
+        path.append((src_idxs, tgt_idxs, pair_score))
         ci, cj = pi, pj
 
     path.reverse()
@@ -185,7 +189,7 @@ def _two_pass_align(
     l1_emb: np.ndarray,
     l2_emb: np.ndarray,
     on_progress: Callable[[float, float | None], None] | None = None,
-) -> list[tuple[list[int], list[int]]]:
+) -> list[tuple[list[int], list[int], float]]:
     """Two-pass alignment: find anchors, then fill between them."""
     n = len(l1_emb)
     m = len(l2_emb)
@@ -209,7 +213,7 @@ def _two_pass_align(
     # After last anchor
     boundaries.append((prev_i, n, prev_j, m))
 
-    result = []
+    result: list[tuple[list[int], list[int], float]] = []
     for idx, (i_start, i_end, j_start, j_end) in enumerate(boundaries):
         # Fill the gap
         filled = _fill_between(l1_emb, l2_emb, i_start, i_end, j_start, j_end)
@@ -218,7 +222,8 @@ def _two_pass_align(
         # If this is not the last boundary, add the anchor pair
         if idx < len(anchors):
             ai, aj = anchors[idx]
-            result.append(([ai], [aj]))
+            anchor_score = float(l1_emb[ai] @ l2_emb[aj])
+            result.append(([ai], [aj], anchor_score))
 
     if on_progress:
         on_progress(2, 2)
@@ -278,9 +283,9 @@ def align_texts(
         p.finish(f"{len(raw_pairs)} pairs")
 
     pairs = []
-    for src_idxs, tgt_idxs in raw_pairs:
+    for src_idxs, tgt_idxs, score in raw_pairs:
         l1_segs = [l1.sentences[i] for i in src_idxs]
         l2_segs = [l2.sentences[i] for i in tgt_idxs]
-        pairs.append(AlignmentPair(l1=l1_segs, l2=l2_segs))
+        pairs.append(AlignmentPair(l1=l1_segs, l2=l2_segs, score=score))
 
     return Alignment(pairs=pairs)
