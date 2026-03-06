@@ -49,6 +49,7 @@ def run_pipeline(
     export_config: ExportConfig | None = None,
     force: bool = False,
     library: Library | None = None,
+    align_padding: int | None = None,
 ) -> BookMeta:
     lib = library or Library()
     lib.init()
@@ -128,7 +129,10 @@ def run_pipeline(
     if force or not align_path.exists():
         click.echo("Stage 3: Aligning...")
         from .align import align_texts
-        alignment = align_texts(seg_l1, seg_l2, device=device)
+        if align_padding is not None:
+            alignment = align_texts(seg_l1, seg_l2, device=device, padding=align_padding)
+        else:
+            alignment = align_texts(seg_l1, seg_l2, device=device)
         alignment.save(align_path)
     else:
         click.echo("Stage 3: Alignment exists, skipping.")
