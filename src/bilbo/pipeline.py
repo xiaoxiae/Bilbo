@@ -19,6 +19,23 @@ from .models import (
 )
 
 
+def _export_alignment_text(alignment: Alignment, output_path: Path) -> None:
+    lines: list[str] = []
+    for pair in alignment.pairs:
+        l1_text = " ".join(s.text for s in pair.l1)
+        l2_text = " ".join(s.text for s in pair.l2)
+        l1_start = pair.l1[0].start
+        l1_end = pair.l1[-1].end
+        l2_start = pair.l2[0].start
+        l2_end = pair.l2[-1].end
+        lines.append(f"L1 ({l1_start:.2f}-{l1_end:.2f}): {l1_text}")
+        lines.append(f"L2 ({l2_start:.2f}-{l2_end:.2f}): {l2_text}")
+        lines.append("")
+    tmp = output_path.with_suffix(".tmp")
+    tmp.write_text("\n".join(lines))
+    tmp.rename(output_path)
+
+
 def _save_raw_segments(segments: list[Segment], path: Path) -> None:
     tmp = path.with_suffix(".tmp")
     data = [asdict(s) for s in segments]
@@ -203,12 +220,17 @@ def run_pipeline(
         return meta
 
     config = export_config or ExportConfig()
-    log.stage(4, "Assembly")
-    from .assemble import assemble
-
     output_name = f"interleaved.{config.format}"
     output_path = book_dir / "exports" / output_name
-    assemble(alignment, l1_audio, l2_audio, config, output_path, log=log)
+
+    if config.format == "txt":
+        log.stage(4, "Text export")
+        _export_alignment_text(alignment, output_path)
+        log.done(f"Written to {output_path}")
+    else:
+        log.stage(4, "Assembly")
+        from .assemble import assemble
+        assemble(alignment, l1_audio, l2_audio, config, output_path, log=log)
 
     if output_name not in meta.exports:
         meta.exports.append(output_name)
@@ -238,20 +260,23 @@ def run_export(
 
     alignment = Alignment.load(align_path)
 
-    l1_audio = Path(meta.l1_audio)
-    l2_audio = Path(meta.l2_audio)
-    if not l1_audio.exists():
-        raise click.ClickException(f"L1 audio not found: {l1_audio}")
-    if not l2_audio.exists():
-        raise click.ClickException(f"L2 audio not found: {l2_audio}")
-
-    from .assemble import assemble
-
     output_name = f"interleaved.{config.format}"
     output_path = book_dir / "exports" / output_name
 
-    log.stage(4, "Assembly")
-    assemble(alignment, l1_audio, l2_audio, config, output_path, log=log)
+    if config.format == "txt":
+        log.stage(4, "Text export")
+        _export_alignment_text(alignment, output_path)
+        log.done(f"Written to {output_path}")
+    else:
+        l1_audio = Path(meta.l1_audio)
+        l2_audio = Path(meta.l2_audio)
+        if not l1_audio.exists():
+            raise click.ClickException(f"L1 audio not found: {l1_audio}")
+        if not l2_audio.exists():
+            raise click.ClickException(f"L2 audio not found: {l2_audio}")
+        from .assemble import assemble
+        log.stage(4, "Assembly")
+        assemble(alignment, l1_audio, l2_audio, config, output_path, log=log)
 
     if output_name not in meta.exports:
         meta.exports.append(output_name)

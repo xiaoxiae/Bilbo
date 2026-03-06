@@ -23,7 +23,7 @@ def cli():
 @click.option("--title", required=True, help="Book title")
 @click.option("--intra-gap", type=int, default=300, help="Gap between L1/L2 within a pair (ms)")
 @click.option("--inter-gap", type=int, default=600, help="Gap between pairs (ms)")
-@click.option("--format", "fmt", type=click.Choice(["m4b", "mp3"]), default="m4b")
+@click.option("--format", "fmt", type=click.Choice(["m4b", "mp3", "txt"]), default="m4b")
 @click.option("--whisper-model", default="large-v3-turbo", help="Whisper model size")
 @click.option("--device", default="auto", help="Compute device (cpu/cuda/auto)")
 @click.option("--order", type=click.Choice(["l1-first", "l2-first"]), default="l1-first")
@@ -55,7 +55,7 @@ def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, f
 @click.argument("slug")
 @click.option("--intra-gap", type=int, default=300, help="Gap between L1/L2 within a pair (ms)")
 @click.option("--inter-gap", type=int, default=600, help="Gap between pairs (ms)")
-@click.option("--format", "fmt", type=click.Choice(["m4b", "mp3"]), default="m4b")
+@click.option("--format", "fmt", type=click.Choice(["m4b", "mp3", "txt"]), default="m4b")
 @click.option("--order", type=click.Choice(["l1-first", "l2-first"]), default="l1-first")
 def export_cmd(slug, intra_gap, inter_gap, fmt, order):
     """Export an interleaved audiobook from an already-processed book."""
