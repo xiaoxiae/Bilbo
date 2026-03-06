@@ -12,52 +12,48 @@ def _words_to_sentences(
     if not words:
         return []
 
+    # Record each word's char offset in the space-joined text
+    word_offsets: list[int] = []
+    offset = 0
+    for w in words:
+        word_offsets.append(offset)
+        offset += len(w.word) + 1  # +1 for space separator
+
     full_text = " ".join(w.word for w in words)
 
-    segmenter = pysbd.Segmenter(language=lang, clean=False)
-    sentence_texts = segmenter.segment(full_text)
-    sentence_texts = [s.strip() for s in sentence_texts if s.strip()]
+    segmenter = pysbd.Segmenter(language=lang, clean=False, char_span=True)
+    spans = segmenter.segment(full_text)
 
-    if not sentence_texts:
-        return []
+    sentences: list[Segment] = []
+    wi = 0  # forward word pointer
 
-    # Build a mapping from character position in full_text to word index
-    # Each word contributes its text + a space separator
-    char_to_word: list[int] = []
-    for wi, w in enumerate(words):
-        char_to_word.extend([wi] * len(w.word))
-        if wi < len(words) - 1:
-            char_to_word.append(wi)  # space between words
-
-    sentences = []
-    search_from = 0
-
-    for sent_text in sentence_texts:
-        if not sent_text.strip():
+    for span in spans:
+        text = span.sent.strip()
+        if not text:
             continue
 
-        idx = full_text.find(sent_text, search_from)
-        if idx == -1:
-            idx = search_from
+        idx = span.start
+        sent_end = span.end
 
-        sent_end_char = min(idx + len(sent_text) - 1, len(char_to_word) - 1)
-        idx = min(idx, len(char_to_word) - 1)
+        # Advance to first word overlapping this sentence
+        while wi < len(words) and word_offsets[wi] + len(words[wi].word) <= idx:
+            wi += 1
 
-        if idx < 0 or sent_end_char < 0:
-            continue
+        if wi >= len(words):
+            break
 
-        first_word_idx = char_to_word[idx]
-        last_word_idx = char_to_word[sent_end_char]
-        search_from = idx + len(sent_text)
+        first_wi = wi
 
-        start = words[first_word_idx].start
-        end = words[last_word_idx].end
-        sent_segment_words = words[first_word_idx:last_word_idx + 1]
+        # Advance to last word overlapping this sentence
+        last_wi = wi
+        while last_wi + 1 < len(words) and word_offsets[last_wi + 1] < sent_end:
+            last_wi += 1
+
         sentences.append(Segment(
-            start=round(start, 3),
-            end=round(end, 3),
-            text=sent_text,
-            words=sent_segment_words,
+            start=round(words[first_wi].start, 3),
+            end=round(words[last_wi].end, 3),
+            text=text,
+            words=words[first_wi : last_wi + 1],
         ))
 
     return sentences
