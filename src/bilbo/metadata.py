@@ -4,8 +4,12 @@ import json
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .models import Alignment, ChapterMarker
+
+if TYPE_CHECKING:
+    from .log import PipelineLog
 
 COVER_JPEG_QUALITY = 90
 
@@ -42,7 +46,7 @@ class SourceMetadata:
         )
 
 
-def probe_metadata(audio_path: Path) -> SourceMetadata:
+def probe_metadata(audio_path: Path, log: PipelineLog | None = None) -> SourceMetadata:
     """Extract metadata, chapters, and cover art presence via ffprobe."""
     result = subprocess.run(
         [
@@ -55,6 +59,8 @@ def probe_metadata(audio_path: Path) -> SourceMetadata:
         text=True,
     )
     if result.returncode != 0:
+        if log:
+            log.warn(f"ffprobe failed for {audio_path.name}, metadata will be empty")
         return SourceMetadata()
 
     data = json.loads(result.stdout)

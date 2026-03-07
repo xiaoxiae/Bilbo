@@ -5,8 +5,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
-import click
-
 from .library import Library
 from .log import PipelineLog
 from .metadata import (
@@ -67,16 +65,18 @@ def _export_alignment_text(alignment: Alignment, output_path: Path) -> None:
 
     lines: list[str] = []
     for i, pair in enumerate(alignment.pairs):
-        l1_text = " ".join(s.text for s in pair.l1)
-        l2_text = " ".join(s.text for s in pair.l2)
-        l1_start = pair.l1[0].start
-        l1_end = pair.l1[-1].end
-        l2_start = pair.l2[0].start
-        l2_end = pair.l2[-1].end
         marker = " !!!" if i in problematic_indices else ""
         lines.append(f"[{pair.score:.2f}]{marker}")
-        lines.append(f"L1 ({l1_start:.2f}-{l1_end:.2f}): {l1_text}")
-        lines.append(f"L2 ({l2_start:.2f}-{l2_end:.2f}): {l2_text}")
+        if pair.l1:
+            l1_text = " ".join(s.text for s in pair.l1)
+            lines.append(f"L1 ({pair.l1[0].start:.2f}-{pair.l1[-1].end:.2f}): {l1_text}")
+        else:
+            lines.append("L1 (no audio)")
+        if pair.l2:
+            l2_text = " ".join(s.text for s in pair.l2)
+            lines.append(f"L2 ({pair.l2[0].start:.2f}-{pair.l2[-1].end:.2f}): {l2_text}")
+        else:
+            lines.append("L2 (no audio)")
         lines.append("")
     tmp = output_path.with_suffix(".tmp")
     tmp.write_text("\n".join(lines))
@@ -124,8 +124,8 @@ def _prepare_metadata(
         l1_meta, l2_meta = load_source_metadata(meta_cache)
     else:
         log.info("Extracting source metadata...")
-        l1_meta = probe_metadata(l1_audio)
-        l2_meta = probe_metadata(l2_audio)
+        l1_meta = probe_metadata(l1_audio, log=log)
+        l2_meta = probe_metadata(l2_audio, log=log)
         save_source_metadata(l1_meta, l2_meta, meta_cache)
 
     # Log extracted metadata
@@ -342,8 +342,15 @@ def run_pipeline(
             problematic_indices.add(i)
     if problematic_indices:
         low_pairs = [alignment.pairs[i] for i in problematic_indices]
-        total_dur = sum(p.l1[-1].end - p.l1[0].start + p.l2[-1].end - p.l2[0].start for p in alignment.pairs)
-        low_dur = sum(p.l1[-1].end - p.l1[0].start + p.l2[-1].end - p.l2[0].start for p in low_pairs)
+        def _pair_dur(p: AlignmentPair) -> float:
+            d = 0.0
+            if p.l1:
+                d += p.l1[-1].end - p.l1[0].start
+            if p.l2:
+                d += p.l2[-1].end - p.l2[0].start
+            return d
+        total_dur = sum(_pair_dur(p) for p in alignment.pairs)
+        low_dur = sum(_pair_dur(p) for p in low_pairs)
         pct = low_dur / total_dur * 100 if total_dur > 0 else 0
         log.warn(f"{len(low_pairs)}/{len(alignment.pairs)} pairs misaligned ({pct:.1f}% of audio)")
 
@@ -401,15 +408,17 @@ def run_export(
     lib = library or Library()
     meta = lib.get(slug)
     if meta is None:
-        raise click.ClickException(f"Book '{slug}' not found in library.")
+        raise ValueError(f"Book '{slug}' not found in library.")
 
     book_dir = lib.book_dir(slug)
     align_path = book_dir / "alignment.json"
 
     if not align_path.exists():
-        raise click.ClickException("Alignment not found. Run 'process' first.")
+        raise ValueError("Alignment not found. Run 'process' first.")
 
     alignment = Alignment.load(align_path)
+    if not alignment.problematic_regions:
+        alignment.problematic_regions = find_problematic_regions(alignment.pairs)
 
     output_name = f"interleaved.{config.format}"
     output_path = book_dir / "exports" / output_name
@@ -422,9 +431,9 @@ def run_export(
         l1_audio = Path(meta.l1_audio)
         l2_audio = Path(meta.l2_audio)
         if not l1_audio.exists():
-            raise click.ClickException(f"L1 audio not found: {l1_audio}")
+            raise ValueError(f"L1 audio not found: {l1_audio}")
         if not l2_audio.exists():
-            raise click.ClickException(f"L2 audio not found: {l2_audio}")
+            raise ValueError(f"L2 audio not found: {l2_audio}")
 
         from .assemble import assemble
 

@@ -7,6 +7,28 @@ import click
 from .library import Library
 from .models import ExportConfig
 
+# Whisper-supported language codes (stable set from openai/whisper)
+WHISPER_LANG_CODES = {
+    "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs",
+    "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi",
+    "fo", "fr", "gl", "gu", "ha", "haw", "he", "hi", "hr", "ht", "hu", "hy",
+    "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb",
+    "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt",
+    "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru",
+    "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw",
+    "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi",
+    "yi", "yo", "yue", "zh",
+}
+
+
+def _validate_lang(ctx, param, value):
+    if value not in WHISPER_LANG_CODES:
+        raise click.BadParameter(
+            f"Unsupported language code '{value}'. "
+            f"Use a Whisper-supported code (e.g. en, de, fr, es, zh, ja)."
+        )
+    return value
+
 
 @click.group()
 @click.version_option(package_name="bilbo")
@@ -18,8 +40,8 @@ def cli():
 @cli.command()
 @click.option("--l1-audio", required=True, type=click.Path(exists=True, path_type=Path), help="L1 audiobook file")
 @click.option("--l2-audio", required=True, type=click.Path(exists=True, path_type=Path), help="L2 audiobook file")
-@click.option("--l1-lang", required=True, help="L1 language code (e.g. en)")
-@click.option("--l2-lang", required=True, help="L2 language code (e.g. de)")
+@click.option("--l1-lang", required=True, callback=_validate_lang, help="L1 language code (e.g. en)")
+@click.option("--l2-lang", required=True, callback=_validate_lang, help="L2 language code (e.g. de)")
 @click.option("--title", required=True, help="Book title")
 @click.option("--intra-gap", type=int, default=300, help="Gap between L1/L2 within a pair (ms)")
 @click.option("--inter-gap", type=int, default=600, help="Gap between pairs (ms)")
@@ -91,7 +113,10 @@ def export_cmd(slug, intra_gap, inter_gap, fmt, order, no_cover, no_chapters, no
         if meta:
             meta.author = author
             lib.add_or_update(meta)
-    run_export(slug, config)
+    try:
+        run_export(slug, config)
+    except ValueError as e:
+        raise click.ClickException(str(e))
 
 
 @cli.command("list")
