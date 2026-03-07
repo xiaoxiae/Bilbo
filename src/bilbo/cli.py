@@ -34,14 +34,15 @@ def cli():
 @click.option("--no-chapters", is_flag=True, help="Skip embedding chapter markers")
 @click.option("--no-warn-noise", is_flag=True, help="Skip warning tones around misaligned regions")
 @click.option("--author", default=None, help="Override author metadata")
-def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, fmt, whisper_model, device, order, no_export, force, batch_size, no_cover, no_chapters, no_warn_noise, author):
+@click.option("--no-llm-merge", is_flag=True, help="Disable LLM-powered metadata merging")
+def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, fmt, whisper_model, device, order, no_export, force, batch_size, no_cover, no_chapters, no_warn_noise, author, no_llm_merge):
     """Run the full processing pipeline."""
     from .pipeline import run_pipeline
 
     config = ExportConfig(
         intra_gap_ms=intra_gap, inter_gap_ms=inter_gap, format=fmt, order=order,
         embed_cover=not no_cover, embed_chapters=not no_chapters,
-        warn_noise=not no_warn_noise,
+        warn_noise=not no_warn_noise, llm_merge=not no_llm_merge,
     )
     meta = run_pipeline(
         l1_audio=l1_audio,
@@ -73,14 +74,15 @@ def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, f
 @click.option("--no-chapters", is_flag=True, help="Skip embedding chapter markers")
 @click.option("--no-warn-noise", is_flag=True, help="Skip warning tones around misaligned regions")
 @click.option("--author", default=None, help="Override author metadata")
-def export_cmd(slug, intra_gap, inter_gap, fmt, order, no_cover, no_chapters, no_warn_noise, author):
+@click.option("--no-llm-merge", is_flag=True, help="Disable LLM-powered metadata merging")
+def export_cmd(slug, intra_gap, inter_gap, fmt, order, no_cover, no_chapters, no_warn_noise, author, no_llm_merge):
     """Export an interleaved audiobook from an already-processed book."""
     from .pipeline import run_export
 
     config = ExportConfig(
         intra_gap_ms=intra_gap, inter_gap_ms=inter_gap, format=fmt, order=order,
         embed_cover=not no_cover, embed_chapters=not no_chapters,
-        warn_noise=not no_warn_noise,
+        warn_noise=not no_warn_noise, llm_merge=not no_llm_merge,
     )
     if author:
         from .library import Library

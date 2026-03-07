@@ -23,6 +23,43 @@ if TYPE_CHECKING:
     from .metadata import SourceMetadata
 
 
+def _build_text_meta(
+    l1_meta: SourceMetadata,
+    l2_meta: SourceMetadata,
+    config: ExportConfig,
+    log: PipelineLog | None,  # noqa: ARG001
+) -> dict[str, str]:
+    """Build merged text metadata dict from L1/L2 source metadata."""
+    pairs: dict[str, tuple[str, str]] = {}
+    singles: dict[str, str] = {}
+    for key, l1_val, l2_val in [
+        ("title", l1_meta.title, l2_meta.title),
+        ("artist", l1_meta.artist, l2_meta.artist),
+        ("album", l1_meta.album, l2_meta.album),
+        ("comment", l1_meta.comment, l2_meta.comment),
+    ]:
+        if l1_val and l2_val:
+            pairs[key] = (l1_val, l2_val)
+        elif l1_val:
+            singles[key] = l1_val
+        elif l2_val:
+            singles[key] = l2_val
+
+    if not pairs and not singles:
+        return {}
+
+    if pairs and config.llm_merge:
+        from .llm import is_available, merge_metadata_text
+        if is_available():
+            merged = merge_metadata_text(pairs)
+        else:
+            merged = {k: " / ".join(v) for k, v in pairs.items()}
+    else:
+        merged = {k: " / ".join(v) for k, v in pairs.items()}
+
+    return {**singles, **merged}
+
+
 def _extract_chunk(
     pair: AlignmentPair,
     audio_path: Path,
@@ -54,7 +91,7 @@ def assemble(
     target_sr = 24000
 
     pp = log.parallel(["L1", "L2"], "Preprocessing", unit="s") if log else None
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         f1 = pool.submit(
             preprocess_audio, l1_audio_path, target_sr,
             on_progress=pp.callback("L1") if pp else None,
@@ -63,6 +100,10 @@ def assemble(
             preprocess_audio, l2_audio_path, target_sr,
             on_progress=pp.callback("L2") if pp else None,
         )
+        # Run LLM metadata merge in parallel with preprocessing
+        llm_future = None
+        if metadata and config.llm_merge:
+            llm_future = pool.submit(_build_text_meta, metadata[0], metadata[1], config, None)
         l1_wav = f1.result()
         l2_wav = f2.result()
 
@@ -87,27 +128,17 @@ def assemble(
         first_wav = l1_wav if first_lang == "l1" else l2_wav
         second_wav = l2_wav if first_lang == "l1" else l1_wav
 
-        # Build text metadata from sources
+        # Collect LLM-merged metadata (ran in parallel with preprocessing)
         text_meta: dict[str, str] | None = None
-        if metadata:
+        if llm_future is not None:
+            text_meta = llm_future.result()
+            if log and text_meta:
+                log.done("Metadata merged via LLM")
+                for k, v in text_meta.items():
+                    log.info(f"  {k}: {v}")
+        elif metadata:
             l1_meta, l2_meta = metadata
-            text_meta = {}
-            if l1_meta.title or l2_meta.title:
-                text_meta["title"] = " / ".join(
-                    t for t in [l1_meta.title, l2_meta.title] if t
-                )
-            if l1_meta.artist or l2_meta.artist:
-                text_meta["artist"] = " / ".join(
-                    a for a in [l1_meta.artist, l2_meta.artist] if a
-                )
-            if l1_meta.album or l2_meta.album:
-                text_meta["album"] = " / ".join(
-                    a for a in [l1_meta.album, l2_meta.album] if a
-                )
-            if l1_meta.comment or l2_meta.comment:
-                text_meta["comment"] = " / ".join(
-                    c for c in [l1_meta.comment, l2_meta.comment] if c
-                )
+            text_meta = _build_text_meta(l1_meta, l2_meta, config, None)
 
         pair_offsets_ms: list[tuple[int, int]] = []
 
@@ -181,6 +212,7 @@ def assemble(
                 mapped_chapters = map_chapters_to_output(
                     l1_meta.chapters, l2_meta.chapters,
                     alignment, pair_offsets_ms, config.order,
+                    llm_merge=config.llm_merge,
                 )
                 if log and mapped_chapters:
                     log.done(f"{len(mapped_chapters)} output chapters")

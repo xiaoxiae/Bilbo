@@ -150,6 +150,7 @@ def map_chapters_to_output(
     alignment: Alignment,
     pair_offsets_ms: list[tuple[int, int]],
     lang_order: str = "l1-first",  # noqa: ARG001
+    llm_merge: bool = False,
 ) -> list[ChapterMarker]:
     """Map source chapters to output timestamps using pair offsets.
 
@@ -226,6 +227,50 @@ def map_chapters_to_output(
         l2_part = ", ".join(unique_l2)
         title = f"{l1_title} / {l2_part}" if l2_part else l1_title
         markers.append(ChapterMarker(title=title, start_ms=ch_start_ms, end_ms=ch_end_ms))
+
+    # Optionally refine chapter titles via LLM
+    if llm_merge and markers and l2_chapters:
+        from .llm import is_available, merge_chapter_titles
+        if is_available():
+            # Rebuild (l1_title, [l2_titles]) pairs for LLM merging
+            chapter_pairs: list[tuple[str, list[str]]] = []
+            marker_idx = 0
+            current_ch = -1
+            l2_titles_group: list[str] = []
+            l1_title_for_ch = ""
+            for pi, ch_idx in enumerate(pair_l1_ch):
+                if ch_idx != current_ch:
+                    if current_ch >= 0:
+                        seen_set: set[str] = set()
+                        deduped: list[str] = []
+                        for t in l2_titles_group:
+                            if t not in seen_set:
+                                seen_set.add(t)
+                                deduped.append(t)
+                        chapter_pairs.append((l1_title_for_ch, deduped))
+                        marker_idx += 1
+                    current_ch = ch_idx
+                    l1_title_for_ch = l1_chapters[ch_idx].title
+                    l2_titles_group = []
+                if pair_l2_ch and pi < len(pair_l2_ch):
+                    l2_titles_group.append(l2_chapters[pair_l2_ch[pi]].title)
+            if current_ch >= 0:
+                seen_set = set()
+                deduped = []
+                for t in l2_titles_group:
+                    if t not in seen_set:
+                        seen_set.add(t)
+                        deduped.append(t)
+                chapter_pairs.append((l1_title_for_ch, deduped))
+
+            merged_titles = merge_chapter_titles(chapter_pairs)
+            for i, title in enumerate(merged_titles):
+                if i < len(markers):
+                    markers[i] = ChapterMarker(
+                        title=title,
+                        start_ms=markers[i].start_ms,
+                        end_ms=markers[i].end_ms,
+                    )
 
     return markers
 

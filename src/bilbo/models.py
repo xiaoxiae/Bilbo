@@ -132,3 +132,4 @@ class ExportConfig:
     embed_cover: bool = True
     embed_chapters: bool = True
     warn_noise: bool = True
+    llm_merge: bool = True
