@@ -131,6 +131,28 @@ def generate_silence(sr: int, ms: int, channels: int = 2) -> np.ndarray:
     return np.zeros((samples, channels), dtype=np.float32)
 
 
+def generate_tone(
+    sr: int,
+    freq: float,
+    duration_ms: int,
+    channels: int,
+    amplitude: float = 0.3,
+    fade_ms: int = 30,
+) -> np.ndarray:
+    """Generate a sine wave tone with smooth fade-in/fade-out."""
+    n_samples = int(sr * duration_ms / 1000)
+    t = np.arange(n_samples, dtype=np.float32) / sr
+    tone = (amplitude * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+    fade_samples = min(int(sr * fade_ms / 1000), n_samples // 2)
+    if fade_samples >= 2:
+        fade_in = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+        fade_out = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+        tone[:fade_samples] *= fade_in
+        tone[-fade_samples:] *= fade_out
+    # Expand to (samples, channels)
+    return np.stack([tone] * channels, axis=1)
+
+
 def apply_fade(chunk: np.ndarray, sr: int, fade_ms: int = 5) -> np.ndarray:
     """Apply short fade-in and fade-out to a chunk to avoid clicks."""
     if len(chunk) == 0:

@@ -11,6 +11,7 @@ from .audio import (
     AudioExporter,
     apply_fade,
     generate_silence,
+    generate_tone,
     post_process_metadata,
     preprocess_audio,
     slice_audio,
@@ -110,9 +111,28 @@ def assemble(
 
         pair_offsets_ms: list[tuple[int, int]] = []
 
+        # Build warning tone data if enabled
+        region_starts: set[int] = set()
+        region_ends: set[int] = set()
+        tone_gap: np.ndarray | None = None
+        start_tone: np.ndarray | None = None
+        end_tone: np.ndarray | None = None
+        if config.warn_noise and alignment.problematic_regions:
+            for rs, re in alignment.problematic_regions:
+                region_starts.add(rs)
+                region_ends.add(re)
+            tone_gap = generate_silence(sr, 100, channels)
+            start_tone = generate_tone(sr, 520, 200, channels, amplitude=0.3)
+            end_tone = generate_tone(sr, 380, 200, channels, amplitude=0.3)
+
         with AudioExporter(sr, channels, output_path, config.format, metadata=text_meta) as exporter:
             for pi, pair in enumerate(pairs):
                 start_ms = int(exporter.total_samples * 1000 / sr)
+
+                if pi in region_starts:
+                    assert start_tone is not None and tone_gap is not None
+                    exporter.write(start_tone)
+                    exporter.write(tone_gap)
 
                 chunk1 = apply_fade(_extract_chunk(pair, first_wav, sr, first_lang, config), sr)
                 chunk2 = apply_fade(_extract_chunk(pair, second_wav, sr, second_lang, config), sr)
@@ -123,6 +143,12 @@ def assemble(
                     exporter.write(intra_gap)
                 if len(chunk2) > 0:
                     exporter.write(chunk2)
+
+                if pi in region_ends:
+                    assert end_tone is not None and tone_gap is not None
+                    exporter.write(tone_gap)
+                    exporter.write(end_tone)
+
                 if pi < len(pairs) - 1:
                     exporter.write(inter_gap)
 

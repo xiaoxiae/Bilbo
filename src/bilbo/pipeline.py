@@ -18,6 +18,7 @@ from .metadata import (
 )
 from .models import (
     Alignment,
+    AlignmentPair,
     BookMeta,
     ExportConfig,
     Segment,
@@ -26,19 +27,53 @@ from .models import (
 )
 
 
-_LOW_SCORE_THRESHOLD = 0.3
+def find_problematic_regions(
+    pairs: list[AlignmentPair],
+    window: int = 5,
+    threshold: float = 0.35,
+) -> list[tuple[int, int]]:
+    """Find contiguous regions of poorly-aligned pairs using sliding window smoothing."""
+    if not pairs:
+        return []
+    scores = [p.score for p in pairs]
+    n = len(scores)
+    half = window // 2
+    smoothed = []
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        smoothed.append(sum(scores[lo:hi]) / (hi - lo))
+
+    regions: list[tuple[int, int]] = []
+    start: int | None = None
+    for i, s in enumerate(smoothed):
+        if s < threshold:
+            if start is None:
+                start = i
+        else:
+            if start is not None:
+                regions.append((start, i - 1))
+                start = None
+    if start is not None:
+        regions.append((start, n - 1))
+    return regions
 
 
 def _export_alignment_text(alignment: Alignment, output_path: Path) -> None:
+    problematic_indices: set[int] = set()
+    for start, end in alignment.problematic_regions:
+        for i in range(start, end + 1):
+            problematic_indices.add(i)
+
     lines: list[str] = []
-    for pair in alignment.pairs:
+    for i, pair in enumerate(alignment.pairs):
         l1_text = " ".join(s.text for s in pair.l1)
         l2_text = " ".join(s.text for s in pair.l2)
         l1_start = pair.l1[0].start
         l1_end = pair.l1[-1].end
         l2_start = pair.l2[0].start
         l2_end = pair.l2[-1].end
-        marker = " !!!" if pair.score < _LOW_SCORE_THRESHOLD else ""
+        marker = " !!!" if i in problematic_indices else ""
         lines.append(f"[{pair.score:.2f}]{marker}")
         lines.append(f"L1 ({l1_start:.2f}-{l1_end:.2f}): {l1_text}")
         lines.append(f"L2 ({l2_start:.2f}-{l2_end:.2f}): {l2_text}")
@@ -272,13 +307,20 @@ def run_pipeline(
     if force or not align_path.exists():
         from .align import align_texts
         alignment = align_texts(seg_l1, seg_l2, device=device, log=log)
+        alignment.problematic_regions = find_problematic_regions(alignment.pairs)
         alignment.save(align_path)
     else:
         log.skip("cached")
         alignment = Alignment.load(align_path)
+        if not alignment.problematic_regions:
+            alignment.problematic_regions = find_problematic_regions(alignment.pairs)
 
-    low_pairs = [p for p in alignment.pairs if p.score < _LOW_SCORE_THRESHOLD]
-    if low_pairs:
+    problematic_indices: set[int] = set()
+    for start, end in alignment.problematic_regions:
+        for i in range(start, end + 1):
+            problematic_indices.add(i)
+    if problematic_indices:
+        low_pairs = [alignment.pairs[i] for i in problematic_indices]
         total_dur = sum(p.l1[-1].end - p.l1[0].start + p.l2[-1].end - p.l2[0].start for p in alignment.pairs)
         low_dur = sum(p.l1[-1].end - p.l1[0].start + p.l2[-1].end - p.l2[0].start for p in low_pairs)
         pct = low_dur / total_dur * 100 if total_dur > 0 else 0

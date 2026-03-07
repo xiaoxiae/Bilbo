@@ -32,14 +32,16 @@ def cli():
 @click.option("--batch-size", type=int, default=None, help="Whisper batch size (default: 16)")
 @click.option("--no-cover", is_flag=True, help="Skip embedding cover art")
 @click.option("--no-chapters", is_flag=True, help="Skip embedding chapter markers")
+@click.option("--no-warn-noise", is_flag=True, help="Skip warning tones around misaligned regions")
 @click.option("--author", default=None, help="Override author metadata")
-def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, fmt, whisper_model, device, order, no_export, force, batch_size, no_cover, no_chapters, author):
+def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, fmt, whisper_model, device, order, no_export, force, batch_size, no_cover, no_chapters, no_warn_noise, author):
     """Run the full processing pipeline."""
     from .pipeline import run_pipeline
 
     config = ExportConfig(
         intra_gap_ms=intra_gap, inter_gap_ms=inter_gap, format=fmt, order=order,
         embed_cover=not no_cover, embed_chapters=not no_chapters,
+        warn_noise=not no_warn_noise,
     )
     meta = run_pipeline(
         l1_audio=l1_audio,
@@ -69,14 +71,16 @@ def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, f
 @click.option("--order", type=click.Choice(["l1-first", "l2-first"]), default="l1-first")
 @click.option("--no-cover", is_flag=True, help="Skip embedding cover art")
 @click.option("--no-chapters", is_flag=True, help="Skip embedding chapter markers")
+@click.option("--no-warn-noise", is_flag=True, help="Skip warning tones around misaligned regions")
 @click.option("--author", default=None, help="Override author metadata")
-def export_cmd(slug, intra_gap, inter_gap, fmt, order, no_cover, no_chapters, author):
+def export_cmd(slug, intra_gap, inter_gap, fmt, order, no_cover, no_chapters, no_warn_noise, author):
     """Export an interleaved audiobook from an already-processed book."""
     from .pipeline import run_export
 
     config = ExportConfig(
         intra_gap_ms=intra_gap, inter_gap_ms=inter_gap, format=fmt, order=order,
         embed_cover=not no_cover, embed_chapters=not no_chapters,
+        warn_noise=not no_warn_noise,
     )
     if author:
         from .library import Library

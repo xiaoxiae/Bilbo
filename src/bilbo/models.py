@@ -55,16 +55,27 @@ class AlignmentPair:
 @dataclass
 class Alignment:
     pairs: list[AlignmentPair]
+    problematic_regions: list[tuple[int, int]] = field(default_factory=list)
 
     def save(self, path: Path) -> None:
         tmp = path.with_suffix(".tmp")
-        data = [{"l1": [asdict(s) for s in p.l1], "l2": [asdict(s) for s in p.l2], "score": p.score} for p in self.pairs]
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        obj = {
+            "pairs": [{"l1": [asdict(s) for s in p.l1], "l2": [asdict(s) for s in p.l2], "score": p.score} for p in self.pairs],
+            "problematic_regions": [list(r) for r in self.problematic_regions],
+        }
+        tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2))
         tmp.rename(path)
 
     @classmethod
     def load(cls, path: Path) -> Alignment:
-        data = json.loads(path.read_text())
+        raw = json.loads(path.read_text())
+        # Support old format (bare list of pairs) and new format (dict with pairs + regions)
+        if isinstance(raw, list):
+            pair_data = raw
+            regions = []
+        else:
+            pair_data = raw["pairs"]
+            regions = [tuple(r) for r in raw.get("problematic_regions", [])]
         pairs = [
             AlignmentPair(
                 l1=[Segment(
@@ -77,9 +88,9 @@ class Alignment:
                 ) for s in p["l2"]],
                 score=p.get("score", 0.0),
             )
-            for p in data
+            for p in pair_data
         ]
-        return cls(pairs=pairs)
+        return cls(pairs=pairs, problematic_regions=regions)
 
 
 @dataclass
@@ -120,3 +131,4 @@ class ExportConfig:
     padding_ms: int = 75
     embed_cover: bool = True
     embed_chapters: bool = True
+    warn_noise: bool = True
