@@ -1,7 +1,7 @@
 import numpy as np
 import soundfile as sf
 
-from bilbo.audio import AudioExporter, crossfade, generate_silence, slice_audio
+from bilbo.audio import AudioExporter, generate_silence, slice_audio
 
 
 def test_slice_audio(tmp_path):
@@ -30,21 +30,6 @@ def test_generate_silence():
     silence = generate_silence(16000, 500, channels=2)
     assert silence.shape == (8000, 2)
     assert np.all(silence == 0)
-
-
-def test_crossfade_basic():
-    a = np.ones((1000, 2), dtype=np.float32)
-    b = np.ones((1000, 2), dtype=np.float32) * 0.5
-    result = crossfade(a, b, ms=10)
-    assert len(result) < len(a) + len(b)
-    assert len(result) > 0
-
-
-def test_crossfade_empty():
-    a = np.ones((1000, 2), dtype=np.float32)
-    b = np.zeros((0, 2), dtype=np.float32)
-    assert np.array_equal(crossfade(a, b), a)
-    assert np.array_equal(crossfade(b, a), a)
 
 
 def test_audio_exporter_streams_to_file(tmp_path):

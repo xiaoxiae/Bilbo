@@ -5,13 +5,16 @@ import urllib.request
 import urllib.error
 
 _OLLAMA_BASE = "http://localhost:11434"
+DEFAULT_LLM_MODEL = "qwen3:8b"
+OLLAMA_HEALTH_TIMEOUT = 5
+OLLAMA_GENERATE_TIMEOUT = 30
 
 
 def is_available() -> bool:
     """Check if ollama is reachable."""
     try:
         req = urllib.request.Request(f"{_OLLAMA_BASE}/", method="GET")
-        with urllib.request.urlopen(req, timeout=5):
+        with urllib.request.urlopen(req, timeout=OLLAMA_HEALTH_TIMEOUT):
             return True
     except (urllib.error.URLError, OSError):
         return False
@@ -37,23 +40,9 @@ def _generate(prompt: str, model: str, schema: dict | None = None) -> str:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=OLLAMA_GENERATE_TIMEOUT) as resp:
         data = json.loads(resp.read().decode())
     return data.get("response", "")
-
-
-def _parse_json_from_response(text: str) -> dict | list:
-    """Extract JSON from LLM response, handling markdown code blocks."""
-    text = text.strip()
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        lines = text.split("\n")
-        # Remove first and last lines (``` markers)
-        lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    return json.loads(text)
 
 
 def _simple_merge(l1: str, l2: str) -> str:
@@ -65,7 +54,7 @@ def _simple_merge(l1: str, l2: str) -> str:
 
 def merge_metadata_text(
     pairs: dict[str, tuple[str, str]],
-    model: str = "qwen3:8b",
+    model: str = DEFAULT_LLM_MODEL,
 ) -> dict[str, str]:
     """Batch-merge multiple L1/L2 text pairs via ollama in a single prompt.
 
@@ -123,7 +112,7 @@ def merge_metadata_text(
 
 def merge_chapter_titles(
     chapters: list[tuple[str, list[str]]],
-    model: str = "qwen3:8b",
+    model: str = DEFAULT_LLM_MODEL,
 ) -> list[str]:
     """Merge chapter titles: each entry is (l1_title, [l2_titles...]).
 

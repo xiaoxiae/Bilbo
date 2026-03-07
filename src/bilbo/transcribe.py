@@ -6,6 +6,9 @@ from typing import TYPE_CHECKING
 
 from .models import Segment, Word
 
+DEFAULT_BATCH_SIZE = 16
+BEAM_SIZE = 5
+
 if TYPE_CHECKING:
     from faster_whisper import BatchedInferencePipeline
 
@@ -35,12 +38,12 @@ def transcribe(
         model = load_whisper_model(model_size, device)
 
     if batch_size is None:
-        batch_size = 16
+        batch_size = DEFAULT_BATCH_SIZE
 
     segments_iter, info = model.transcribe(
         str(audio_path),
         language=lang,
-        beam_size=5,
+        beam_size=BEAM_SIZE,
         vad_filter=True,
         word_timestamps=True,
         batch_size=batch_size,

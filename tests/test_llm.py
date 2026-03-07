@@ -5,7 +5,6 @@ from bilbo.llm import (
     is_available,
     merge_metadata_text,
     merge_chapter_titles,
-    _parse_json_from_response,
     _simple_merge,
 )
 
@@ -16,20 +15,6 @@ def test_simple_merge_identical():
 
 def test_simple_merge_different():
     assert _simple_merge("English", "German") == "English / German"
-
-
-def test_parse_json_plain():
-    assert _parse_json_from_response('{"a": "b"}') == {"a": "b"}
-
-
-def test_parse_json_code_fence():
-    text = '```json\n{"a": "b"}\n```'
-    assert _parse_json_from_response(text) == {"a": "b"}
-
-
-def test_parse_json_code_fence_no_lang():
-    text = '```\n["x", "y"]\n```'
-    assert _parse_json_from_response(text) == ["x", "y"]
 
 
 def test_is_available_unreachable():

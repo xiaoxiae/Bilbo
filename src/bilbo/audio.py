@@ -15,6 +15,7 @@ import numpy as np
 import soundfile as sf
 
 TARGET_LUFS = -16.0
+ENCODE_BITRATE = "64k"
 
 
 def _probe_duration(path: Path) -> float | None:
@@ -112,20 +113,6 @@ def slice_audio(
     return data
 
 
-def crossfade(a: np.ndarray, b: np.ndarray, ms: int = 30) -> np.ndarray:
-    if len(a) == 0:
-        return b
-    if len(b) == 0:
-        return a
-    samples = min(ms * 48, len(a), len(b))  # approximate, assumes <=48kHz
-    if samples < 2:
-        return np.concatenate([a, b])
-    fade_out = np.linspace(1.0, 0.0, samples, dtype=np.float32).reshape(-1, 1)
-    fade_in = np.linspace(0.0, 1.0, samples, dtype=np.float32).reshape(-1, 1)
-    overlap = a[-samples:] * fade_out + b[:samples] * fade_in
-    return np.concatenate([a[:-samples], overlap, b[samples:]])
-
-
 def generate_silence(sr: int, ms: int, channels: int = 2) -> np.ndarray:
     samples = int(sr * ms / 1000)
     return np.zeros((samples, channels), dtype=np.float32)
@@ -216,7 +203,7 @@ class AudioExporter:
                 "ffmpeg", "-y",
                 "-f", "f32le", "-ar", str(self.sr), "-ac", str(self.channels),
                 "-i", "pipe:0",
-                "-c:a", codec, "-b:a", "64k",
+                "-c:a", codec, "-b:a", ENCODE_BITRATE,
                 *meta_flags,
                 "-progress", "pipe:1", "-nostats",
                 str(out),

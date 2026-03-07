@@ -127,7 +127,6 @@ class ExportConfig:
     inter_gap_ms: int = 600
     format: str = "m4b"
     order: str = "l1-first"
-    crossfade_ms: int = 30
     padding_ms: int = 75
     embed_cover: bool = True
     embed_chapters: bool = True

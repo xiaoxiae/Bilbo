@@ -312,7 +312,6 @@ def run_pipeline(
             log.done(f"L1: {len(seg_l1.sentences)} sentences")
             seg_l2 = SegmentedText.load(seg_l2_path)
         else:
-            raw_l1 = _load_raw_segments(raw_l1_path)
             seg_l1 = SegmentedText.load(seg_l1_path)
             log.info("Segmenting L2...")
             seg_l2 = _segment_and_save(raw_l2, l2_lang, seg_l2_path)

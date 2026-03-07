@@ -18,6 +18,13 @@ from .audio import (
 )
 from .models import Alignment, AlignmentPair, ChapterMarker, ExportConfig
 
+TARGET_SR = 24_000
+TONE_GAP_MS = 100
+WARN_TONE_MS = 200
+WARN_START_FREQ = 520
+WARN_END_FREQ = 380
+WARN_TONE_AMPLITUDE = 0.3
+
 if TYPE_CHECKING:
     from .log import PipelineLog
     from .metadata import SourceMetadata
@@ -88,7 +95,7 @@ def assemble(
     metadata: tuple[SourceMetadata, SourceMetadata] | None = None,
     cover_path: Path | None = None,
 ) -> None:
-    target_sr = 24000
+    target_sr = TARGET_SR
 
     pp = log.parallel(["L1", "L2"], "Preprocessing", unit="s") if log else None
     with ThreadPoolExecutor(max_workers=3) as pool:
@@ -152,9 +159,9 @@ def assemble(
             for rs, re in alignment.problematic_regions:
                 region_starts.add(rs)
                 region_ends.add(re)
-            tone_gap = generate_silence(sr, 100, channels)
-            start_tone = generate_tone(sr, 520, 200, channels, amplitude=0.3)
-            end_tone = generate_tone(sr, 380, 200, channels, amplitude=0.3)
+            tone_gap = generate_silence(sr, TONE_GAP_MS, channels)
+            start_tone = generate_tone(sr, WARN_START_FREQ, WARN_TONE_MS, channels, amplitude=WARN_TONE_AMPLITUDE)
+            end_tone = generate_tone(sr, WARN_END_FREQ, WARN_TONE_MS, channels, amplitude=WARN_TONE_AMPLITUDE)
 
         with AudioExporter(sr, channels, output_path, config.format, metadata=text_meta) as exporter:
             for pi, pair in enumerate(pairs):

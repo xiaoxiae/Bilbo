@@ -10,6 +10,9 @@ import numpy as np
 
 from .models import Alignment, AlignmentPair, SegmentedText
 
+MIN_STEP_RATIO = 0.25
+MAX_STEP_RATIO = 4.0
+
 if TYPE_CHECKING:
     from .log import PipelineLog
 
@@ -86,7 +89,7 @@ def _find_anchors(
             di = i - last_i
             dj = j - last_j
             expected_dj = di * m / n
-            if expected_dj > 0 and not (0.25 < dj / expected_dj < 4.0):
+            if expected_dj > 0 and not (MIN_STEP_RATIO < dj / expected_dj < MAX_STEP_RATIO):
                 continue
             anchors.append((i, j))
             last_i, last_j = i, j

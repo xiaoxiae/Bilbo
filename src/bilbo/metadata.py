@@ -7,6 +7,8 @@ from pathlib import Path
 
 from .models import Alignment, ChapterMarker
 
+COVER_JPEG_QUALITY = 90
+
 
 @dataclass
 class SourceChapter:
@@ -122,7 +124,7 @@ def merge_covers(l1_cover: Path, l2_cover: Path, output: Path) -> None:
     merged = Image.new("RGB", (img1.width + img2.width, target_h))
     merged.paste(img1, (0, 0))
     merged.paste(img2, (img1.width, 0))
-    merged.save(str(output), "JPEG", quality=90)
+    merged.save(str(output), "JPEG", quality=COVER_JPEG_QUALITY)
 
 
 def _assign_chapters(
