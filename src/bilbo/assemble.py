@@ -11,13 +11,15 @@ from .audio import (
     AudioExporter,
     apply_fade,
     generate_silence,
+    post_process_metadata,
     preprocess_audio,
     slice_audio,
 )
-from .models import Alignment, AlignmentPair, ExportConfig
+from .models import Alignment, AlignmentPair, ChapterMarker, ExportConfig
 
 if TYPE_CHECKING:
     from .log import PipelineLog
+    from .metadata import SourceMetadata
 
 
 def _extract_chunk(
@@ -45,6 +47,8 @@ def assemble(
     config: ExportConfig,
     output_path: Path,
     log: PipelineLog | None = None,
+    metadata: tuple[SourceMetadata, SourceMetadata] | None = None,
+    cover_path: Path | None = None,
 ) -> None:
     target_sr = 24000
 
@@ -82,8 +86,34 @@ def assemble(
         first_wav = l1_wav if first_lang == "l1" else l2_wav
         second_wav = l2_wav if first_lang == "l1" else l1_wav
 
-        with AudioExporter(sr, channels, output_path, config.format) as exporter:
+        # Build text metadata from sources
+        text_meta: dict[str, str] | None = None
+        if metadata:
+            l1_meta, l2_meta = metadata
+            text_meta = {}
+            if l1_meta.title or l2_meta.title:
+                text_meta["title"] = " / ".join(
+                    t for t in [l1_meta.title, l2_meta.title] if t
+                )
+            if l1_meta.artist or l2_meta.artist:
+                text_meta["artist"] = " / ".join(
+                    a for a in [l1_meta.artist, l2_meta.artist] if a
+                )
+            if l1_meta.album or l2_meta.album:
+                text_meta["album"] = " / ".join(
+                    a for a in [l1_meta.album, l2_meta.album] if a
+                )
+            if l1_meta.comment or l2_meta.comment:
+                text_meta["comment"] = " / ".join(
+                    c for c in [l1_meta.comment, l2_meta.comment] if c
+                )
+
+        pair_offsets_ms: list[tuple[int, int]] = []
+
+        with AudioExporter(sr, channels, output_path, config.format, metadata=text_meta) as exporter:
             for pi, pair in enumerate(pairs):
+                start_ms = int(exporter.total_samples * 1000 / sr)
+
                 chunk1 = apply_fade(_extract_chunk(pair, first_wav, sr, first_lang, config), sr)
                 chunk2 = apply_fade(_extract_chunk(pair, second_wav, sr, second_lang, config), sr)
 
@@ -96,6 +126,9 @@ def assemble(
                 if pi < len(pairs) - 1:
                     exporter.write(inter_gap)
 
+                end_ms = int(exporter.total_samples * 1000 / sr)
+                pair_offsets_ms.append((start_ms, end_ms))
+
                 if p:
                     p.update(pi + 1, len(pairs))
 
@@ -106,6 +139,28 @@ def assemble(
 
         if p:
             p.finish(f"{exporter.duration / 60:.1f} minutes")
+
+        # Post-process: embed cover art and chapters
+        out_file = output_path.with_suffix(f".{config.format}")
+        need_cover = config.embed_cover and cover_path and cover_path.exists()
+        need_chapters = config.embed_chapters and metadata and (
+            metadata[0].chapters or metadata[1].chapters
+        )
+
+        if need_cover or need_chapters:
+            mapped_chapters: list[ChapterMarker] | None = None
+            if need_chapters:
+                from .metadata import map_chapters_to_output
+                l1_meta, l2_meta = metadata  # type: ignore[misc]
+                mapped_chapters = map_chapters_to_output(
+                    l1_meta.chapters, l2_meta.chapters,
+                    alignment, pair_offsets_ms, config.order,
+                )
+            post_process_metadata(
+                out_file,
+                cover_path=cover_path if need_cover else None,
+                chapters=mapped_chapters,
+            )
 
     finally:
         l1_wav.unlink(missing_ok=True)

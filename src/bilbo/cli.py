@@ -30,11 +30,17 @@ def cli():
 @click.option("--no-export", is_flag=True, help="Stop after alignment, skip audio export")
 @click.option("--force", is_flag=True, help="Re-run all stages")
 @click.option("--batch-size", type=int, default=None, help="Whisper batch size (default: 16)")
-def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, fmt, whisper_model, device, order, no_export, force, batch_size):
+@click.option("--no-cover", is_flag=True, help="Skip embedding cover art")
+@click.option("--no-chapters", is_flag=True, help="Skip embedding chapter markers")
+@click.option("--author", default=None, help="Override author metadata")
+def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, fmt, whisper_model, device, order, no_export, force, batch_size, no_cover, no_chapters, author):
     """Run the full processing pipeline."""
     from .pipeline import run_pipeline
 
-    config = ExportConfig(intra_gap_ms=intra_gap, inter_gap_ms=inter_gap, format=fmt, order=order)
+    config = ExportConfig(
+        intra_gap_ms=intra_gap, inter_gap_ms=inter_gap, format=fmt, order=order,
+        embed_cover=not no_cover, embed_chapters=not no_chapters,
+    )
     meta = run_pipeline(
         l1_audio=l1_audio,
         l2_audio=l2_audio,
@@ -48,6 +54,10 @@ def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, f
         force=force,
         batch_size=batch_size,
     )
+    if author:
+        meta.author = author
+        from .library import Library
+        Library().add_or_update(meta)
     click.echo(f"\nBook '{meta.title}' saved as '{meta.slug}'.")
 
 
@@ -57,11 +67,24 @@ def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, f
 @click.option("--inter-gap", type=int, default=600, help="Gap between pairs (ms)")
 @click.option("--format", "fmt", type=click.Choice(["m4b", "mp3", "txt"]), default="m4b")
 @click.option("--order", type=click.Choice(["l1-first", "l2-first"]), default="l1-first")
-def export_cmd(slug, intra_gap, inter_gap, fmt, order):
+@click.option("--no-cover", is_flag=True, help="Skip embedding cover art")
+@click.option("--no-chapters", is_flag=True, help="Skip embedding chapter markers")
+@click.option("--author", default=None, help="Override author metadata")
+def export_cmd(slug, intra_gap, inter_gap, fmt, order, no_cover, no_chapters, author):
     """Export an interleaved audiobook from an already-processed book."""
     from .pipeline import run_export
 
-    config = ExportConfig(intra_gap_ms=intra_gap, inter_gap_ms=inter_gap, format=fmt, order=order)
+    config = ExportConfig(
+        intra_gap_ms=intra_gap, inter_gap_ms=inter_gap, format=fmt, order=order,
+        embed_cover=not no_cover, embed_chapters=not no_chapters,
+    )
+    if author:
+        from .library import Library
+        lib = Library()
+        meta = lib.get(slug)
+        if meta:
+            meta.author = author
+            lib.add_or_update(meta)
     run_export(slug, config)
 
 
@@ -89,6 +112,8 @@ def info(slug):
         raise click.ClickException(f"Book '{slug}' not found.")
     click.echo(f"Title:    {meta.title}")
     click.echo(f"Slug:     {meta.slug}")
+    if meta.author:
+        click.echo(f"Author:   {meta.author}")
     click.echo(f"L1:       {meta.l1_lang} ({meta.l1_audio})")
     click.echo(f"L2:       {meta.l2_lang} ({meta.l2_audio})")
     click.echo(f"Stages:   {sorted(meta.stages_completed)}")

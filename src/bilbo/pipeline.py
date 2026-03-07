@@ -9,6 +9,13 @@ import click
 
 from .library import Library
 from .log import PipelineLog
+from .metadata import (
+    extract_cover_art,
+    load_source_metadata,
+    merge_covers,
+    probe_metadata,
+    save_source_metadata,
+)
 from .models import (
     Alignment,
     BookMeta,
@@ -59,6 +66,61 @@ def _load_raw_segments(path: Path) -> list[Segment]:
         )
         for s in data
     ]
+
+
+def _prepare_metadata(
+    l1_audio: Path,
+    l2_audio: Path,
+    book_dir: Path,
+    config: ExportConfig,
+    force: bool,
+    log: PipelineLog,
+):
+    """Extract, cache, and merge metadata from source audiobooks.
+
+    Returns (metadata_tuple, cover_path) or (None, None) if nothing to embed.
+    """
+    if not config.embed_cover and not config.embed_chapters:
+        return None, None
+
+    meta_cache = book_dir / "source_metadata.json"
+
+    if not force and meta_cache.exists():
+        l1_meta, l2_meta = load_source_metadata(meta_cache)
+    else:
+        log.info("Extracting source metadata...")
+        l1_meta = probe_metadata(l1_audio)
+        l2_meta = probe_metadata(l2_audio)
+        save_source_metadata(l1_meta, l2_meta, meta_cache)
+
+    # Extract and merge covers
+    cover_path: Path | None = None
+    if config.embed_cover:
+        merged_cover = book_dir / "cover.jpg"
+        if not force and merged_cover.exists():
+            cover_path = merged_cover
+        else:
+            l1_cover = book_dir / "cover_l1.jpg"
+            l2_cover = book_dir / "cover_l2.jpg"
+            has_l1 = extract_cover_art(l1_audio, l1_cover) if l1_meta.has_cover else False
+            has_l2 = extract_cover_art(l2_audio, l2_cover) if l2_meta.has_cover else False
+
+            if has_l1 and has_l2:
+                merge_covers(l1_cover, l2_cover, merged_cover)
+                cover_path = merged_cover
+            elif has_l1:
+                l1_cover.rename(merged_cover)
+                cover_path = merged_cover
+            elif has_l2:
+                l2_cover.rename(merged_cover)
+                cover_path = merged_cover
+
+            # Clean up individual covers
+            l1_cover.unlink(missing_ok=True)
+            l2_cover.unlink(missing_ok=True)
+
+    metadata = (l1_meta, l2_meta)
+    return metadata, cover_path
 
 
 def run_pipeline(
@@ -242,7 +304,21 @@ def run_pipeline(
     else:
         log.stage(4, "Assembly")
         from .assemble import assemble
-        assemble(alignment, l1_audio, l2_audio, config, output_path, log=log)
+
+        source_metadata, cover = _prepare_metadata(
+            l1_audio, l2_audio, book_dir, config, force, log,
+        )
+
+        # Update author from extracted metadata
+        if source_metadata:
+            l1_m, l2_m = source_metadata
+            if not meta.author:
+                meta.author = l1_m.artist or l2_m.artist
+
+        assemble(
+            alignment, l1_audio, l2_audio, config, output_path,
+            log=log, metadata=source_metadata, cover_path=cover,
+        )
 
     if output_name not in meta.exports:
         meta.exports.append(output_name)
@@ -286,9 +362,24 @@ def run_export(
             raise click.ClickException(f"L1 audio not found: {l1_audio}")
         if not l2_audio.exists():
             raise click.ClickException(f"L2 audio not found: {l2_audio}")
+
         from .assemble import assemble
+
+        source_metadata, cover = _prepare_metadata(
+            l1_audio, l2_audio, book_dir, config, False, log,
+        )
+
+        # Update author from extracted metadata
+        if source_metadata:
+            l1_m, l2_m = source_metadata
+            if not meta.author:
+                meta.author = l1_m.artist or l2_m.artist
+
         log.stage(4, "Assembly")
-        assemble(alignment, l1_audio, l2_audio, config, output_path, log=log)
+        assemble(
+            alignment, l1_audio, l2_audio, config, output_path,
+            log=log, metadata=source_metadata, cover_path=cover,
+        )
 
     if output_name not in meta.exports:
         meta.exports.append(output_name)

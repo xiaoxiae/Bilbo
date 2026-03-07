@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import ChapterMarker
 
 import numpy as np
 import soundfile as sf
@@ -159,12 +164,14 @@ class AudioExporter:
         path: Path,
         fmt: str = "m4b",
         on_progress: Callable[[float, float | None], None] | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> None:
         self.sr = sr
         self.channels = channels
         self.path = path
         self.fmt = fmt
         self.on_progress = on_progress
+        self.metadata = metadata
         self.total_samples = 0
         self._proc: subprocess.Popen[bytes] | None = None
         self._progress_thread: threading.Thread | None = None
@@ -176,12 +183,19 @@ class AudioExporter:
     def __enter__(self) -> AudioExporter:
         codec = "aac" if self.fmt == "m4b" else "libmp3lame"
         out = self.path.with_suffix(f".{self.fmt}")
+
+        meta_flags: list[str] = []
+        if self.metadata:
+            for key, value in self.metadata.items():
+                meta_flags.extend(["-metadata", f"{key}={value}"])
+
         self._proc = subprocess.Popen(
             [
                 "ffmpeg", "-y",
                 "-f", "f32le", "-ar", str(self.sr), "-ac", str(self.channels),
                 "-i", "pipe:0",
                 "-c:a", codec, "-b:a", "64k",
+                *meta_flags,
                 "-progress", "pipe:1", "-nostats",
                 str(out),
             ],
@@ -224,3 +238,133 @@ class AudioExporter:
             raise subprocess.CalledProcessError(
                 self._proc.returncode, "ffmpeg", stderr=stderr
             )
+
+
+def post_process_metadata(
+    audio_path: Path,
+    cover_path: Path | None = None,
+    chapters: list[ChapterMarker] | None = None,
+) -> None:
+    """Embed cover art and/or chapter markers into an existing audio file.
+
+    For m4b: uses ffmetadata + ffmpeg remux.
+    For mp3: uses ffmpeg remux for cover, mutagen for chapters.
+    Atomic writes throughout (.tmp -> rename).
+    """
+    ext = audio_path.suffix.lower()
+    if ext == ".m4b":
+        _post_process_m4b(audio_path, cover_path, chapters)
+    elif ext == ".mp3":
+        _post_process_mp3(audio_path, cover_path, chapters)
+
+
+def _post_process_m4b(
+    audio_path: Path,
+    cover_path: Path | None,
+    chapters: list[ChapterMarker] | None,
+) -> None:
+    """Remux m4b with cover art and/or chapter metadata via ffmpeg."""
+    if not cover_path and not chapters:
+        return
+
+    meta_file = None
+    try:
+        inputs = ["-i", str(audio_path)]
+        maps = ["-map", "0:a"]
+        codec_flags = ["-c:a", "copy"]
+        extra: list[str] = []
+
+        # Write ffmetadata file with chapters
+        if chapters:
+            fd, meta_path = tempfile.mkstemp(suffix=".txt")
+            meta_file = Path(meta_path)
+            lines = [";FFMETADATA1"]
+            for ch in chapters:
+                lines.append("")
+                lines.append("[CHAPTER]")
+                lines.append("TIMEBASE=1/1000")
+                lines.append(f"START={ch.start_ms}")
+                lines.append(f"END={ch.end_ms}")
+                lines.append(f"title={ch.title}")
+            os.write(fd, "\n".join(lines).encode("utf-8"))
+            os.close(fd)
+            inputs.extend(["-i", meta_path])
+            extra.extend(["-map_metadata", str(len(inputs) // 2 - 1)])
+
+        # Cover art
+        if cover_path:
+            inputs.extend(["-i", str(cover_path)])
+            cover_idx = len(inputs) // 2 - 1
+            maps.extend(["-map", f"{cover_idx}:v"])
+            codec_flags.extend(["-c:v", "copy", f"-disposition:v:0", "attached_pic"])
+
+        tmp_out = audio_path.with_suffix(".tmp.m4b")
+        cmd = [
+            "ffmpeg", "-y",
+            *inputs,
+            *maps,
+            *codec_flags,
+            *extra,
+            str(tmp_out),
+        ]
+        subprocess.run(cmd, capture_output=True, check=True)
+        tmp_out.rename(audio_path)
+    finally:
+        if meta_file:
+            meta_file.unlink(missing_ok=True)
+
+
+def _post_process_mp3(
+    audio_path: Path,
+    cover_path: Path | None,
+    chapters: list[ChapterMarker] | None,
+) -> None:
+    """Embed cover and chapters into mp3."""
+    # Cover via ffmpeg remux
+    if cover_path:
+        tmp_out = audio_path.with_suffix(".tmp.mp3")
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", str(audio_path), "-i", str(cover_path),
+                "-map", "0:a", "-map", "1",
+                "-c:a", "copy",
+                "-id3v2_version", "3",
+                str(tmp_out),
+            ],
+            capture_output=True,
+            check=True,
+        )
+        tmp_out.rename(audio_path)
+
+    # Chapters via mutagen ID3
+    if chapters:
+        from mutagen.id3 import ID3, CTOC, CHAP, TIT2, CTOCFlags
+
+        tag = ID3(str(audio_path))
+
+        # Remove existing chapter frames
+        tag.delall("CHAP")
+        tag.delall("CTOC")
+
+        chap_ids = []
+        for i, ch in enumerate(chapters):
+            chap_id = f"chp{i}"
+            chap_ids.append(chap_id)
+            tag.add(CHAP(
+                element_id=chap_id,
+                start_time=ch.start_ms,
+                end_time=ch.end_ms,
+                start_offset=0xFFFFFFFF,
+                end_offset=0xFFFFFFFF,
+                sub_frames=[TIT2(encoding=3, text=[ch.title])],
+            ))
+
+        tag.add(CTOC(
+            element_id="toc",
+            flags=CTOCFlags.TOP_LEVEL | CTOCFlags.ORDERED,
+            child_element_ids=chap_ids,
+            sub_frames=[TIT2(encoding=3, text=["Table of Contents"])],
+        ))
+
+        tag.save()

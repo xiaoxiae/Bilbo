@@ -83,6 +83,13 @@ class Alignment:
 
 
 @dataclass
+class ChapterMarker:
+    title: str
+    start_ms: int
+    end_ms: int
+
+
+@dataclass
 class BookMeta:
     slug: str
     title: str
@@ -92,12 +99,14 @@ class BookMeta:
     l2_audio: str
     stages_completed: list[int] = field(default_factory=list)
     exports: list[str] = field(default_factory=list)
+    author: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> BookMeta:
+        d = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
         return cls(**d)
 
 
@@ -109,3 +118,5 @@ class ExportConfig:
     order: str = "l1-first"
     crossfade_ms: int = 30
     padding_ms: int = 75
+    embed_cover: bool = True
+    embed_chapters: bool = True

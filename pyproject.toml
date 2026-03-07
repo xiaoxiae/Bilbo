@@ -17,6 +17,8 @@ dependencies = [
     "click",
     "soundfile",
     "numpy",
+    "Pillow",
+    "mutagen",
 ]
 
 [dependency-groups]
