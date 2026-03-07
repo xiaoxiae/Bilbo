@@ -124,6 +124,48 @@ def test_map_chapters_l1_only():
     assert markers[0].title == "Chapter 1"
 
 
+def test_map_chapters_mismatched_counts():
+    """L2 has more chapters than L1 — L2 titles matched by alignment, not index."""
+    l1_chapters = [
+        SourceChapter("Chapter 1", 0.0, 10.0),
+        SourceChapter("Chapter 2", 10.0, 20.0),
+    ]
+    # L2 has 4 fine-grained chapters (e.g. CD tracks)
+    l2_chapters = [
+        SourceChapter("Track 1", 0.0, 2.5),
+        SourceChapter("Track 2", 2.5, 5.0),
+        SourceChapter("Track 3", 5.0, 7.5),
+        SourceChapter("Track 4", 7.5, 10.0),
+    ]
+    alignment = Alignment(pairs=[
+        AlignmentPair(
+            l1=[Segment(1.0, 4.0, "A.", words=[])],
+            l2=[Segment(1.0, 2.0, "A.", words=[])],  # midpoint 1.5 -> Track 1
+        ),
+        AlignmentPair(
+            l1=[Segment(5.0, 9.0, "B.", words=[])],
+            l2=[Segment(3.0, 4.5, "B.", words=[])],  # midpoint 3.75 -> Track 2
+        ),
+        AlignmentPair(
+            l1=[Segment(11.0, 15.0, "C.", words=[])],
+            l2=[Segment(5.5, 7.0, "C.", words=[])],  # midpoint 6.25 -> Track 3
+        ),
+        AlignmentPair(
+            l1=[Segment(16.0, 19.0, "D.", words=[])],
+            l2=[Segment(8.0, 9.5, "D.", words=[])],  # midpoint 8.75 -> Track 4
+        ),
+    ])
+    pair_offsets_ms = [(0, 3000), (3000, 6000), (6000, 9000), (9000, 12000)]
+
+    markers = map_chapters_to_output(l1_chapters, l2_chapters, alignment, pair_offsets_ms)
+
+    assert len(markers) == 2
+    # Chapter 1 contains pairs 0,1 -> L2 Track 1, Track 2
+    assert markers[0].title == "Chapter 1 / Track 1, Track 2"
+    # Chapter 2 contains pairs 2,3 -> L2 Track 3, Track 4
+    assert markers[1].title == "Chapter 2 / Track 3, Track 4"
+
+
 def test_chapter_marker_fields():
     ch = ChapterMarker(title="Test", start_ms=0, end_ms=1000)
     assert ch.title == "Test"

@@ -128,6 +128,28 @@ def _prepare_metadata(
         l2_meta = probe_metadata(l2_audio)
         save_source_metadata(l1_meta, l2_meta, meta_cache)
 
+    # Log extracted metadata
+    if l1_meta.title or l2_meta.title:
+        l1_t = l1_meta.title or "?"
+        l2_t = l2_meta.title or "?"
+        log.info(f"Titles: {l1_t} / {l2_t}")
+    if l1_meta.artist or l2_meta.artist:
+        l1_a = l1_meta.artist or "?"
+        l2_a = l2_meta.artist or "?"
+        log.info(f"Artists: {l1_a} / {l2_a}")
+    l1_ch = len(l1_meta.chapters)
+    l2_ch = len(l2_meta.chapters)
+    if l1_ch or l2_ch:
+        log.info(f"Chapters: L1={l1_ch}, L2={l2_ch}")
+    if l1_meta.has_cover and l2_meta.has_cover:
+        log.info("Cover art: both sources")
+    elif l1_meta.has_cover:
+        log.info("Cover art: L1 only")
+    elif l2_meta.has_cover:
+        log.info("Cover art: L2 only")
+    else:
+        log.info("Cover art: none")
+
     # Extract and merge covers
     cover_path: Path | None = None
     if config.embed_cover:

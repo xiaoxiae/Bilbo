@@ -280,6 +280,27 @@ def post_process_metadata(
         _post_process_mp3(audio_path, cover_path, chapters)
 
 
+def _probe_format_tags(path: Path) -> dict[str, str]:
+    """Read format-level tags from an audio file via ffprobe."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-print_format", "json",
+                "-show_format",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        import json
+        data = json.loads(result.stdout)
+        return data.get("format", {}).get("tags", {})
+    except (subprocess.CalledProcessError, ValueError):
+        return {}
+
+
 def _post_process_m4b(
     audio_path: Path,
     cover_path: Path | None,
@@ -296,11 +317,18 @@ def _post_process_m4b(
         codec_flags = ["-c:a", "copy"]
         extra: list[str] = []
 
-        # Write ffmetadata file with chapters
+        # Always build ffmetadata file with existing tags + chapters
+        # so that -map_metadata preserves text metadata through remux
+        existing_tags = _probe_format_tags(audio_path)
+
+        fd, meta_path = tempfile.mkstemp(suffix=".txt")
+        meta_file = Path(meta_path)
+        lines = [";FFMETADATA1"]
+        for key, value in existing_tags.items():
+            # Escape special chars in ffmetadata format
+            escaped = value.replace("\\", "\\\\").replace("=", "\\=").replace(";", "\\;").replace("#", "\\#").replace("\n", "\\\n")
+            lines.append(f"{key}={escaped}")
         if chapters:
-            fd, meta_path = tempfile.mkstemp(suffix=".txt")
-            meta_file = Path(meta_path)
-            lines = [";FFMETADATA1"]
             for ch in chapters:
                 lines.append("")
                 lines.append("[CHAPTER]")
@@ -308,10 +336,10 @@ def _post_process_m4b(
                 lines.append(f"START={ch.start_ms}")
                 lines.append(f"END={ch.end_ms}")
                 lines.append(f"title={ch.title}")
-            os.write(fd, "\n".join(lines).encode("utf-8"))
-            os.close(fd)
-            inputs.extend(["-i", meta_path])
-            extra.extend(["-map_metadata", str(len(inputs) // 2 - 1)])
+        os.write(fd, "\n".join(lines).encode("utf-8"))
+        os.close(fd)
+        inputs.extend(["-i", meta_path])
+        extra.extend(["-map_metadata", str(len(inputs) // 2 - 1)])
 
         # Cover art
         if cover_path:

@@ -125,6 +125,25 @@ def merge_covers(l1_cover: Path, l2_cover: Path, output: Path) -> None:
     merged.save(str(output), "JPEG", quality=90)
 
 
+def _assign_chapters(
+    midpoints: list[float],
+    chapters: list[SourceChapter],
+) -> list[int]:
+    """Assign each midpoint to the chapter containing it."""
+    result: list[int] = []
+    for mid in midpoints:
+        assigned = 0
+        for ci, ch in enumerate(chapters):
+            if ch.start <= mid <= ch.end:
+                assigned = ci
+                break
+            if mid > ch.end and ci < len(chapters) - 1:
+                continue
+            assigned = ci
+        result.append(assigned)
+    return result
+
+
 def map_chapters_to_output(
     l1_chapters: list[SourceChapter],
     l2_chapters: list[SourceChapter],
@@ -135,64 +154,77 @@ def map_chapters_to_output(
     """Map source chapters to output timestamps using pair offsets.
 
     Algorithm:
-    1. For each alignment pair, compute the midpoint of its L1 segments' timestamps
-    2. Assign each pair to the L1 source chapter containing that midpoint
-    3. The output chapter starts at the output offset of the first pair in the group
-    4. Title = "L1 chapter title / L2 chapter title" (matched by index)
+    1. For each pair, compute the midpoint of its L1 and L2 segments
+    2. Assign each pair to its L1 chapter (drives output chapter boundaries)
+    3. Also assign each pair to its L2 chapter (for title building)
+    4. Group by L1 chapter; title = "L1 title / unique L2 titles"
     """
     if not l1_chapters or not pair_offsets_ms:
         return []
 
-    # Compute midpoint of L1 segments for each pair
-    pair_midpoints: list[float] = []
+    # Compute midpoints for L1 and L2
+    l1_midpoints: list[float] = []
+    l2_midpoints: list[float] = []
     for pair in alignment.pairs:
         if pair.l1:
             start = min(s.start for s in pair.l1)
             end = max(s.end for s in pair.l1)
-            pair_midpoints.append((start + end) / 2)
+            l1_midpoints.append((start + end) / 2)
         else:
-            pair_midpoints.append(0.0)
+            l1_midpoints.append(0.0)
+        if pair.l2:
+            start = min(s.start for s in pair.l2)
+            end = max(s.end for s in pair.l2)
+            l2_midpoints.append((start + end) / 2)
+        else:
+            l2_midpoints.append(0.0)
 
-    # Assign each pair to a chapter
-    pair_chapter_idx: list[int] = []
-    for mid in pair_midpoints:
-        assigned = 0
-        for ci, ch in enumerate(l1_chapters):
-            if ch.start <= mid <= ch.end:
-                assigned = ci
-                break
-            # If midpoint is past this chapter, try next
-            if mid > ch.end and ci < len(l1_chapters) - 1:
-                continue
-            # Default to last chapter if past all
-            assigned = ci
-        pair_chapter_idx.append(assigned)
+    # Assign each pair to L1 and L2 chapters independently
+    pair_l1_ch = _assign_chapters(l1_midpoints, l1_chapters)
+    pair_l2_ch = _assign_chapters(l2_midpoints, l2_chapters) if l2_chapters else []
 
-    # Group pairs by chapter and build markers
+    # Group pairs by L1 chapter and build markers
     markers: list[ChapterMarker] = []
     current_ch = -1
     ch_start_ms = 0
     ch_end_ms = 0
+    l2_titles_in_group: list[str] = []
 
-    for pi, ch_idx in enumerate(pair_chapter_idx):
+    for pi, ch_idx in enumerate(pair_l1_ch):
         if ch_idx != current_ch:
             # Finish previous chapter
             if current_ch >= 0:
-                l1_title = l1_chapters[current_ch].title if current_ch < len(l1_chapters) else ""
-                l2_title = l2_chapters[current_ch].title if current_ch < len(l2_chapters) else ""
-                title = f"{l1_title} / {l2_title}" if l2_title else l1_title
+                l1_title = l1_chapters[current_ch].title
+                # Deduplicate L2 titles while preserving order
+                seen: set[str] = set()
+                unique_l2: list[str] = []
+                for t in l2_titles_in_group:
+                    if t not in seen:
+                        seen.add(t)
+                        unique_l2.append(t)
+                l2_part = ", ".join(unique_l2)
+                title = f"{l1_title} / {l2_part}" if l2_part else l1_title
                 markers.append(ChapterMarker(title=title, start_ms=ch_start_ms, end_ms=ch_end_ms))
 
             current_ch = ch_idx
             ch_start_ms = pair_offsets_ms[pi][0]
+            l2_titles_in_group = []
 
         ch_end_ms = pair_offsets_ms[pi][1]
+        if pair_l2_ch and pi < len(pair_l2_ch):
+            l2_titles_in_group.append(l2_chapters[pair_l2_ch[pi]].title)
 
     # Finish last chapter
     if current_ch >= 0:
-        l1_title = l1_chapters[current_ch].title if current_ch < len(l1_chapters) else ""
-        l2_title = l2_chapters[current_ch].title if current_ch < len(l2_chapters) else ""
-        title = f"{l1_title} / {l2_title}" if l2_title else l1_title
+        l1_title = l1_chapters[current_ch].title
+        seen = set()
+        unique_l2 = []
+        for t in l2_titles_in_group:
+            if t not in seen:
+                seen.add(t)
+                unique_l2.append(t)
+        l2_part = ", ".join(unique_l2)
+        title = f"{l1_title} / {l2_part}" if l2_part else l1_title
         markers.append(ChapterMarker(title=title, start_ms=ch_start_ms, end_ms=ch_end_ms))
 
     return markers

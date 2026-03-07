@@ -182,6 +182,8 @@ def assemble(
                     l1_meta.chapters, l2_meta.chapters,
                     alignment, pair_offsets_ms, config.order,
                 )
+                if log and mapped_chapters:
+                    log.done(f"{len(mapped_chapters)} output chapters")
             post_process_metadata(
                 out_file,
                 cover_path=cover_path if need_cover else None,
