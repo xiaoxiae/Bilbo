@@ -8,8 +8,8 @@ import numpy as np
 import soundfile as sf
 
 from .audio import (
+    AudioExporter,
     apply_fade,
-    export_audio,
     generate_silence,
     preprocess_audio,
     slice_audio,
@@ -82,35 +82,30 @@ def assemble(
         first_wav = l1_wav if first_lang == "l1" else l2_wav
         second_wav = l2_wav if first_lang == "l1" else l1_wav
 
-        all_parts: list[np.ndarray] = []
-        for pi, pair in enumerate(pairs):
-            chunk1 = apply_fade(_extract_chunk(pair, first_wav, sr, first_lang, config), sr)
-            chunk2 = apply_fade(_extract_chunk(pair, second_wav, sr, second_lang, config), sr)
+        with AudioExporter(sr, channels, output_path, config.format) as exporter:
+            for pi, pair in enumerate(pairs):
+                chunk1 = apply_fade(_extract_chunk(pair, first_wav, sr, first_lang, config), sr)
+                chunk2 = apply_fade(_extract_chunk(pair, second_wav, sr, second_lang, config), sr)
 
-            if len(chunk1) > 0:
-                all_parts.append(chunk1)
-            if len(chunk1) > 0 and len(chunk2) > 0:
-                all_parts.append(intra_gap)
-            if len(chunk2) > 0:
-                all_parts.append(chunk2)
-            if pi < len(pairs) - 1:
-                all_parts.append(inter_gap)
+                if len(chunk1) > 0:
+                    exporter.write(chunk1)
+                if len(chunk1) > 0 and len(chunk2) > 0:
+                    exporter.write(intra_gap)
+                if len(chunk2) > 0:
+                    exporter.write(chunk2)
+                if pi < len(pairs) - 1:
+                    exporter.write(inter_gap)
 
-            if p:
-                p.update(pi + 1, len(pairs))
+                if p:
+                    p.update(pi + 1, len(pairs))
 
-        if not all_parts:
+        if exporter.total_samples == 0:
             if log:
                 log.warn("no audio content to assemble")
             return
 
-        if log:
-            log.info(f"Exporting {output_path.name}...")
-        result = np.concatenate(all_parts)
-        export_audio(result, sr, output_path, config.format)
-        duration = len(result) / sr
-        if log:
-            log.done(f"{duration / 60:.1f} minutes")
+        if p:
+            p.finish(f"{exporter.duration / 60:.1f} minutes")
 
     finally:
         l1_wav.unlink(missing_ok=True)

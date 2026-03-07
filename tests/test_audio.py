@@ -1,7 +1,7 @@
 import numpy as np
 import soundfile as sf
 
-from bilbo.audio import crossfade, generate_silence, slice_audio
+from bilbo.audio import AudioExporter, crossfade, generate_silence, slice_audio
 
 
 def test_slice_audio(tmp_path):
@@ -45,3 +45,51 @@ def test_crossfade_empty():
     b = np.zeros((0, 2), dtype=np.float32)
     assert np.array_equal(crossfade(a, b), a)
     assert np.array_equal(crossfade(b, a), a)
+
+
+def test_audio_exporter_streams_to_file(tmp_path):
+    """Chunks written to AudioExporter produce a valid audio file."""
+    sr = 16000
+    out = tmp_path / "out.mp3"
+    chunk = np.random.randn(sr, 1).astype(np.float32)  # 1 second mono
+
+    with AudioExporter(sr, 1, out, fmt="mp3") as exp:
+        exp.write(chunk)
+        exp.write(chunk)
+
+    assert exp.total_samples == sr * 2
+    assert abs(exp.duration - 2.0) < 0.01
+    assert out.exists()
+    info = sf.info(str(out))
+    assert abs(info.duration - 2.0) < 0.1
+
+
+def test_audio_exporter_skips_empty_chunks(tmp_path):
+    sr = 16000
+    out = tmp_path / "out.mp3"
+    chunk = np.random.randn(sr, 1).astype(np.float32)
+    empty = np.zeros((0, 1), dtype=np.float32)
+
+    with AudioExporter(sr, 1, out, fmt="mp3") as exp:
+        exp.write(empty)
+        exp.write(chunk)
+        exp.write(empty)
+
+    assert exp.total_samples == sr
+
+
+def test_audio_exporter_progress_callback(tmp_path):
+    sr = 16000
+    out = tmp_path / "out.mp3"
+    chunk = np.random.randn(sr * 3, 1).astype(np.float32)  # 3 seconds
+    progress_calls = []
+
+    with AudioExporter(sr, 1, out, fmt="mp3",
+                       on_progress=lambda cur, tot: progress_calls.append((cur, tot))) as exp:
+        exp.write(chunk)
+
+    assert len(progress_calls) > 0
+    # Each call should have (current_secs, total_secs)
+    last_cur, last_tot = progress_calls[-1]
+    assert last_cur > 0
+    assert last_tot > 0

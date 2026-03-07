@@ -47,83 +47,50 @@ def _block_similarity(
 def _find_anchors(
     l1_emb: np.ndarray,
     l2_emb: np.ndarray,
-    win: int = 50,
-    skip_penalty: float = 0.0,
+    l1_texts: list[str],
+    l2_texts: list[str],
+    win: int = 250,
+    min_words: int = 4,
+    min_sim: float = 0.7,
 ) -> list[tuple[int, int]]:
-    """Pass 1: windowed 1-1 DP to find high-confidence anchor pairs."""
+    """Find anchor pairs: high-similarity, long-enough sentences, monotonic.
+
+    For each L1 sentence with enough words, find the best L2 match within
+    a window around the expected diagonal position.
+    """
     n = len(l1_emb)
     m = len(l2_emb)
-    INF = -1e18
 
-    # Similarity matrix (already L2-normalized)
-    sim = l1_emb @ l2_emb.T  # (n, m)
-
-    # DP table: dp[i][j] = best score aligning l1[:i] with l2[:j]
-    # Transitions from (i, j):
-    #   skip L1: go to (i+1, j) with cost skip_penalty
-    #   skip L2: go to (i, j+1) with cost skip_penalty
-    #   align 1-1: go to (i+1, j+1) with cost sim[i, j]
-    dp = np.full((n + 1, m + 1), INF)
-    dp[0, 0] = 0.0
-    # backpointer: 0=none, 1=skip_l1 (from i-1,j), 2=skip_l2 (from i,j-1), 3=align (from i-1,j-1)
-    back = np.zeros((n + 1, m + 1), dtype=np.int8)
-
-    for i in range(n + 1):
-        # Window: j should be near i * m / n
-        center = int(round(i * m / n)) if n > 0 else 0
-        j_lo = max(0, center - win)
+    anchors = []
+    last_i, last_j = 0, 0
+    for i in range(n):
+        if len(l1_texts[i].split()) < min_words:
+            continue
+        # Search forward from the last anchor, scaled by how far i advanced
+        center = last_j + int(round((i - last_i) * m / n))
+        j_lo = max(last_j + 1, center - win)
         j_hi = min(m, center + win)
-
-        for j in range(j_lo, j_hi + 1):
-            if dp[i, j] == INF:
+        if j_lo >= j_hi:
+            continue
+        sims = l1_emb[i] @ l2_emb[j_lo:j_hi].T
+        # Try candidates in descending similarity order
+        order = np.argsort(sims)[::-1]
+        for idx in order:
+            score = float(sims[idx])
+            if score < min_sim:
+                break
+            j = j_lo + int(idx)
+            if len(l2_texts[j].split()) < min_words:
                 continue
-            val = dp[i, j]
-
-            # Skip L1 (advance i, keep j)
-            if i < n:
-                new_val = val + skip_penalty
-                if new_val > dp[i + 1, j]:
-                    dp[i + 1, j] = new_val
-                    back[i + 1, j] = 1
-
-            # Skip L2 (keep i, advance j)
-            if j < m:
-                new_val = val + skip_penalty
-                if new_val > dp[i, j + 1]:
-                    dp[i, j + 1] = new_val
-                    back[i, j + 1] = 2
-
-            # Align 1-1
-            if i < n and j < m:
-                new_val = val + sim[i, j]
-                if new_val > dp[i + 1, j + 1]:
-                    dp[i + 1, j + 1] = new_val
-                    back[i + 1, j + 1] = 3
-
-    # Backtrace from (n, m)
-    pairs = []
-    ci, cj = n, m
-    while ci > 0 or cj > 0:
-        b = back[ci, cj]
-        if b == 0:
+            # Reject if step ratio deviates too far from global m/n
+            di = i - last_i
+            dj = j - last_j
+            expected_dj = di * m / n
+            if expected_dj > 0 and not (0.25 < dj / expected_dj < 4.0):
+                continue
+            anchors.append((i, j))
+            last_i, last_j = i, j
             break
-        if b == 1:  # skip L1
-            ci -= 1
-        elif b == 2:  # skip L2
-            cj -= 1
-        elif b == 3:  # aligned
-            ci -= 1
-            cj -= 1
-            pairs.append((ci, cj))
-    pairs.reverse()
-
-    if not pairs:
-        return []
-
-    # Filter to high-confidence anchors: sim > mean + 0.5 * std
-    sims = np.array([sim[i, j] for i, j in pairs])
-    threshold = sims.mean() + 0.5 * sims.std()
-    anchors = [(i, j) for (i, j), s in zip(pairs, sims) if s >= threshold]
 
     return anchors
 
@@ -188,7 +155,10 @@ def _fill_between(
 def _two_pass_align(
     l1_emb: np.ndarray,
     l2_emb: np.ndarray,
+    l1_texts: list[str],
+    l2_texts: list[str],
     on_progress: Callable[[float, float | None], None] | None = None,
+    log: PipelineLog | None = None,
 ) -> list[tuple[list[int], list[int], float]]:
     """Two-pass alignment: find anchors, then fill between them."""
     n = len(l1_emb)
@@ -197,7 +167,10 @@ def _two_pass_align(
     if on_progress:
         on_progress(0, 2)
 
-    anchors = _find_anchors(l1_emb, l2_emb)
+    anchors = _find_anchors(l1_emb, l2_emb, l1_texts, l2_texts)
+
+    if log:
+        log.info(f"Found {len(anchors)} anchors")
 
     if on_progress:
         on_progress(1, 2)
@@ -212,6 +185,7 @@ def _two_pass_align(
         prev_j = aj + 1
     # After last anchor
     boundaries.append((prev_i, n, prev_j, m))
+
 
     result: list[tuple[list[int], list[int], float]] = []
     for idx, (i_start, i_end, j_start, j_end) in enumerate(boundaries):
@@ -278,7 +252,7 @@ def align_texts(
     l2_emb = all_emb[len(l1_texts):]
 
     p = log.progress("Alignment", unit="") if log else None
-    raw_pairs = _two_pass_align(l1_emb, l2_emb, on_progress=p.update if p else None)
+    raw_pairs = _two_pass_align(l1_emb, l2_emb, l1_texts, l2_texts, on_progress=p.update if p else None, log=log)
     if p:
         p.finish(f"{len(raw_pairs)} pairs")
 

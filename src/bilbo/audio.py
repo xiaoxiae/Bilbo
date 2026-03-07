@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -56,7 +57,7 @@ def preprocess_audio(
             "ffmpeg", "-y", "-i", str(input_path),
             "-ar", str(target_sr),
             "-af", f"loudnorm=I={target_lufs}:LRA=11:TP=-1.5",
-            "-f", "wav", "-acodec", "pcm_f32le",
+            "-f", "wav", "-acodec", "pcm_f32le", "-rf64", "auto",
             "-progress", "pipe:1", "-nostats",
             tmp_path,
         ],
@@ -140,24 +141,86 @@ def apply_fade(chunk: np.ndarray, sr: int, fade_ms: int = 5) -> np.ndarray:
     return chunk
 
 
-def export_audio(data: np.ndarray, sr: int, path: Path, fmt: str = "m4b") -> None:
-    tmp = path.with_suffix(".tmp.wav")
-    sf.write(str(tmp), data, sr, subtype="FLOAT")
+class AudioExporter:
+    """Context manager that streams PCM chunks to ffmpeg for encoding.
 
-    if fmt == "wav":
-        tmp.rename(path)
-        return
+    Usage::
 
-    codec = "aac" if fmt == "m4b" else "libmp3lame"
-    ext = f".{fmt}"
-    out = path.with_suffix(ext)
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", str(tmp),
-            "-c:a", codec, "-b:a", "64k",
-            str(out),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    tmp.unlink()
+        with AudioExporter(sr, channels, path, fmt) as exp:
+            exp.write(chunk1)
+            exp.write(chunk2)
+        print(exp.duration)
+    """
+
+    def __init__(
+        self,
+        sr: int,
+        channels: int,
+        path: Path,
+        fmt: str = "m4b",
+        on_progress: Callable[[float, float | None], None] | None = None,
+    ) -> None:
+        self.sr = sr
+        self.channels = channels
+        self.path = path
+        self.fmt = fmt
+        self.on_progress = on_progress
+        self.total_samples = 0
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._progress_thread: threading.Thread | None = None
+
+    @property
+    def duration(self) -> float:
+        return self.total_samples / self.sr
+
+    def __enter__(self) -> AudioExporter:
+        codec = "aac" if self.fmt == "m4b" else "libmp3lame"
+        out = self.path.with_suffix(f".{self.fmt}")
+        self._proc = subprocess.Popen(
+            [
+                "ffmpeg", "-y",
+                "-f", "f32le", "-ar", str(self.sr), "-ac", str(self.channels),
+                "-i", "pipe:0",
+                "-c:a", codec, "-b:a", "64k",
+                "-progress", "pipe:1", "-nostats",
+                str(out),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+        )
+        self._progress_thread = threading.Thread(target=self._read_progress, daemon=True)
+        self._progress_thread.start()
+        return self
+
+    def write(self, chunk: np.ndarray) -> None:
+        if len(chunk) == 0:
+            return
+        self.total_samples += len(chunk)
+        assert self._proc is not None and self._proc.stdin is not None
+        self._proc.stdin.write(chunk.tobytes())
+
+    def _read_progress(self) -> None:
+        assert self._proc is not None and self._proc.stdout is not None
+        for raw_line in self._proc.stdout:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if line.startswith("out_time_us=") and self.on_progress is not None:
+                try:
+                    us = int(line.split("=", 1)[1])
+                except ValueError:
+                    continue
+                self.on_progress(us / 1_000_000, self.total_samples / self.sr)
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
+        assert self._proc is not None
+        if self._proc.stdin:
+            self._proc.stdin.close()
+        if self._progress_thread:
+            self._progress_thread.join()
+        self._proc.wait()
+        if exc_type is None and self._proc.returncode != 0:
+            stderr = self._proc.stderr.read() if self._proc.stderr else b""
+            raise subprocess.CalledProcessError(
+                self._proc.returncode, "ffmpeg", stderr=stderr
+            )
