@@ -112,25 +112,28 @@ def extract_cover_art(audio_path: Path, output_path: Path) -> bool:
 
 
 def merge_covers(l1_cover: Path, l2_cover: Path, output: Path) -> None:
-    """Merge two cover images side-by-side, resizing to same height."""
+    """Merge two cover images with a diagonal split (L1 top-left, L2 bottom-right)."""
     from PIL import Image
+
+    import numpy as np
 
     img1 = Image.open(l1_cover)
     img2 = Image.open(l2_cover)
 
-    # Resize to same height (use the smaller one)
+    # Resize both to the same dimensions
+    target_w = min(img1.width, img2.width)
     target_h = min(img1.height, img2.height)
-    if img1.height != target_h:
-        w = int(img1.width * target_h / img1.height)
-        img1 = img1.resize((w, target_h), Image.LANCZOS)
-    if img2.height != target_h:
-        w = int(img2.width * target_h / img2.height)
-        img2 = img2.resize((w, target_h), Image.LANCZOS)
+    if img1.size != (target_w, target_h):
+        img1 = img1.resize((target_w, target_h), Image.LANCZOS)
+    if img2.size != (target_w, target_h):
+        img2 = img2.resize((target_w, target_h), Image.LANCZOS)
 
-    merged = Image.new("RGB", (img1.width + img2.width, target_h))
-    merged.paste(img1, (0, 0))
-    merged.paste(img2, (img1.width, 0))
-    merged.save(str(output), "JPEG", quality=COVER_JPEG_QUALITY)
+    arr1 = np.array(img1)
+    arr2 = np.array(img2)
+    for y in range(target_h):
+        cut_x = int(target_w * (1 - y / target_h))
+        arr2[y, :cut_x] = arr1[y, :cut_x]
+    Image.fromarray(arr2).save(str(output), "JPEG", quality=COVER_JPEG_QUALITY)
 
 
 def _assign_chapters(
