@@ -25,6 +25,10 @@ from .models import (
 )
 
 
+STAGE_NAMES = {1: "transcription", 2: "segmentation", 3: "alignment", 4: "export"}
+STAGE_COMMANDS = {1: "transcribe", 2: "segment", 3: "align", 4: "export"}
+
+
 def find_problematic_regions(
     pairs: list[AlignmentPair],
     window: int = 5,
@@ -107,7 +111,6 @@ def _prepare_metadata(
     l1_audio: Path,
     l2_audio: Path,
     book_dir: Path,
-    config: ExportConfig,
     force: bool,
     log: PipelineLog,
 ):
@@ -115,9 +118,6 @@ def _prepare_metadata(
 
     Returns (metadata_tuple, cover_path) or (None, None) if nothing to embed.
     """
-    if not config.embed_cover and not config.embed_chapters:
-        return None, None
-
     meta_cache = book_dir / "source_metadata.json"
 
     if not force and meta_cache.exists():
@@ -152,29 +152,28 @@ def _prepare_metadata(
 
     # Extract and merge covers
     cover_path: Path | None = None
-    if config.embed_cover:
-        merged_cover = book_dir / "cover.jpg"
-        if not force and merged_cover.exists():
+    merged_cover = book_dir / "cover.jpg"
+    if not force and merged_cover.exists():
+        cover_path = merged_cover
+    else:
+        l1_cover = book_dir / "cover_l1.jpg"
+        l2_cover = book_dir / "cover_l2.jpg"
+        has_l1 = extract_cover_art(l1_audio, l1_cover) if l1_meta.has_cover else False
+        has_l2 = extract_cover_art(l2_audio, l2_cover) if l2_meta.has_cover else False
+
+        if has_l1 and has_l2:
+            merge_covers(l1_cover, l2_cover, merged_cover)
             cover_path = merged_cover
-        else:
-            l1_cover = book_dir / "cover_l1.jpg"
-            l2_cover = book_dir / "cover_l2.jpg"
-            has_l1 = extract_cover_art(l1_audio, l1_cover) if l1_meta.has_cover else False
-            has_l2 = extract_cover_art(l2_audio, l2_cover) if l2_meta.has_cover else False
+        elif has_l1:
+            l1_cover.rename(merged_cover)
+            cover_path = merged_cover
+        elif has_l2:
+            l2_cover.rename(merged_cover)
+            cover_path = merged_cover
 
-            if has_l1 and has_l2:
-                merge_covers(l1_cover, l2_cover, merged_cover)
-                cover_path = merged_cover
-            elif has_l1:
-                l1_cover.rename(merged_cover)
-                cover_path = merged_cover
-            elif has_l2:
-                l2_cover.rename(merged_cover)
-                cover_path = merged_cover
-
-            # Clean up individual covers
-            l1_cover.unlink(missing_ok=True)
-            l2_cover.unlink(missing_ok=True)
+        # Clean up individual covers
+        l1_cover.unlink(missing_ok=True)
+        l2_cover.unlink(missing_ok=True)
 
     metadata = (l1_meta, l2_meta)
     return metadata, cover_path
@@ -188,15 +187,20 @@ def run_pipeline(
     title: str,
     model_size: str = "large-v3-turbo",
     device: str = "auto",
-    no_export: bool = False,
     export_config: ExportConfig | None = None,
-    force: bool = False,
     library: Library | None = None,
-    batch_size: int | None = None,
+    from_stage: int | None = None,
+    to_stage: int | None = None,
 ) -> BookMeta:
     log = PipelineLog()
     lib = library or Library()
     lib.init()
+
+    force = [False] * 5  # index 0 unused; force[1..4] per stage
+    if from_stage is not None:
+        end = to_stage or 4
+        for i in range(from_stage, end + 1):
+            force[i] = True
 
     existing_slug = lib.find_slug(title)
     if existing_slug:
@@ -209,22 +213,50 @@ def run_pipeline(
     book_dir.mkdir(parents=True, exist_ok=True)
     (book_dir / "exports").mkdir(exist_ok=True)
 
+    # Copy input audio into the book directory so we don't depend on
+    # the original files staying in place.
+    input_dir = book_dir / "input"
+    input_dir.mkdir(exist_ok=True)
+    l1_copy = input_dir / f"l1{l1_audio.suffix}"
+    l2_copy = input_dir / f"l2{l2_audio.suffix}"
+    if not l1_copy.exists():
+        import shutil
+        log.info("Copying L1 audio...")
+        shutil.copy2(l1_audio, l1_copy)
+    if not l2_copy.exists():
+        import shutil
+        log.info("Copying L2 audio...")
+        shutil.copy2(l2_audio, l2_copy)
+    l1_audio = l1_copy
+    l2_audio = l2_copy
+
     meta = existing or BookMeta(
         slug=slug,
         title=title,
         l1_lang=l1_lang,
         l2_lang=l2_lang,
-        l1_audio=str(l1_audio.resolve()),
-        l2_audio=str(l2_audio.resolve()),
+        l1_audio=str(l1_copy),
+        l2_audio=str(l2_copy),
     )
+    meta.l1_audio = str(l1_copy)
+    meta.l2_audio = str(l2_copy)
+
+    # Check prerequisites when starting from a later stage
+    if from_stage is not None and from_stage > 1 and existing:
+        for s in range(1, from_stage):
+            if s not in meta.stages_completed:
+                raise ValueError(
+                    f"Stage {s} ({STAGE_NAMES[s]}) not completed. "
+                    f"Run 'bilbo {STAGE_COMMANDS[s]} {slug}' first."
+                )
 
     # Stage 1: Transcription
     log.stage(1, "Transcription")
     raw_l1_path = book_dir / "raw_segments_l1.json"
     raw_l2_path = book_dir / "raw_segments_l2.json"
 
-    need_l1 = force or not raw_l1_path.exists()
-    need_l2 = force or not raw_l2_path.exists()
+    need_l1 = force[1] or not raw_l1_path.exists()
+    need_l2 = force[1] or not raw_l2_path.exists()
 
     if need_l1 or need_l2:
         from .transcribe import transcribe, load_whisper_model
@@ -238,7 +270,7 @@ def run_pipeline(
             def _transcribe_and_save(audio_path, lang, out_path, label):
                 segs = transcribe(
                     audio_path, lang, model=model,
-                    batch_size=batch_size, on_progress=pp.callback(label),
+                    on_progress=pp.callback(label),
                 )
                 _save_raw_segments(segs, out_path)
                 return segs
@@ -253,7 +285,7 @@ def run_pipeline(
             p = log.progress("Transcribing L1", unit="s")
             raw_l1 = transcribe(
                 l1_audio, l1_lang, model=model,
-                batch_size=batch_size, on_progress=p.update,
+                on_progress=p.update,
             )
             _save_raw_segments(raw_l1, raw_l1_path)
             p.finish(f"{len(raw_l1)} segments")
@@ -263,7 +295,7 @@ def run_pipeline(
             p = log.progress("Transcribing L2", unit="s")
             raw_l2 = transcribe(
                 l2_audio, l2_lang, model=model,
-                batch_size=batch_size, on_progress=p.update,
+                on_progress=p.update,
             )
             _save_raw_segments(raw_l2, raw_l2_path)
             p.finish(f"{len(raw_l2)} segments")
@@ -278,54 +310,63 @@ def run_pipeline(
         meta.stages_completed.append(1)
     lib.add_or_update(meta)
 
+    if to_stage is not None and to_stage < 2:
+        log.info(f"Stopping after stage {to_stage}.")
+        return meta
+
     # Stage 2: Segmentation
     log.stage(2, "Segmentation")
     seg_l1_path = book_dir / "segments_l1.json"
     seg_l2_path = book_dir / "segments_l2.json"
 
-    need_seg_l1 = force or not seg_l1_path.exists()
-    need_seg_l2 = force or not seg_l2_path.exists()
+    need_seg_l1 = force[2] or not seg_l1_path.exists()
+    need_seg_l2 = force[2] or not seg_l2_path.exists()
 
     if not need_seg_l1 and not need_seg_l2:
         log.skip("cached")
         seg_l1 = SegmentedText.load(seg_l1_path)
         seg_l2 = SegmentedText.load(seg_l2_path)
     else:
-        from .segment import segment_text
+        from .segment import refine_timestamps, segment_text
 
-        def _segment_and_save(raw_segs, lang, out_path):
+        def _segment_and_save(raw_segs, lang, audio, out_path):
             result = segment_text(raw_segs, lang)
+            result = refine_timestamps(result, audio, log=log)
             result.save(out_path)
             return result
 
         if need_seg_l1 and need_seg_l2:
             log.info("Segmenting L1 + L2 in parallel...")
             with ThreadPoolExecutor(max_workers=2) as pool:
-                f1 = pool.submit(_segment_and_save, raw_l1, l1_lang, seg_l1_path)
-                f2 = pool.submit(_segment_and_save, raw_l2, l2_lang, seg_l2_path)
+                f1 = pool.submit(_segment_and_save, raw_l1, l1_lang, l1_audio, seg_l1_path)
+                f2 = pool.submit(_segment_and_save, raw_l2, l2_lang, l2_audio, seg_l2_path)
                 seg_l1 = f1.result()
                 seg_l2 = f2.result()
             log.done(f"L1: {len(seg_l1.sentences)} sentences, L2: {len(seg_l2.sentences)} sentences")
         elif need_seg_l1:
             log.info("Segmenting L1...")
-            seg_l1 = _segment_and_save(raw_l1, l1_lang, seg_l1_path)
+            seg_l1 = _segment_and_save(raw_l1, l1_lang, l1_audio, seg_l1_path)
             log.done(f"L1: {len(seg_l1.sentences)} sentences")
             seg_l2 = SegmentedText.load(seg_l2_path)
         else:
             seg_l1 = SegmentedText.load(seg_l1_path)
             log.info("Segmenting L2...")
-            seg_l2 = _segment_and_save(raw_l2, l2_lang, seg_l2_path)
+            seg_l2 = _segment_and_save(raw_l2, l2_lang, l2_audio, seg_l2_path)
             log.done(f"L2: {len(seg_l2.sentences)} sentences")
 
     if 2 not in meta.stages_completed:
         meta.stages_completed.append(2)
     lib.add_or_update(meta)
 
+    if to_stage is not None and to_stage < 3:
+        log.info(f"Stopping after stage {to_stage}.")
+        return meta
+
     # Stage 3: Alignment
     log.stage(3, "Alignment")
     align_path = book_dir / "alignment.json"
 
-    if force or not align_path.exists():
+    if force[3] or not align_path.exists():
         from .align import align_texts
         alignment = align_texts(seg_l1, seg_l2, device=device, log=log)
         alignment.problematic_regions = find_problematic_regions(alignment.pairs)
@@ -359,8 +400,8 @@ def run_pipeline(
     lib.add_or_update(meta)
 
     # Stage 4: Export
-    if no_export:
-        log.info("Skipping export (--no-export).")
+    if to_stage is not None and to_stage < 4:
+        log.info(f"Stopping after stage {to_stage}.")
         return meta
 
     config = export_config or ExportConfig()
@@ -376,7 +417,7 @@ def run_pipeline(
         from .assemble import assemble
 
         source_metadata, cover = _prepare_metadata(
-            l1_audio, l2_audio, book_dir, config, force, log,
+            l1_audio, l2_audio, book_dir, force[4], log,
         )
 
         # Update author from extracted metadata
@@ -413,8 +454,10 @@ def run_export(
     book_dir = lib.book_dir(slug)
     align_path = book_dir / "alignment.json"
 
+    if 3 not in meta.stages_completed:
+        raise ValueError("Alignment not completed. Run 'bilbo align <slug>' first.")
     if not align_path.exists():
-        raise ValueError("Alignment not found. Run 'process' first.")
+        raise ValueError("Alignment file missing. Run 'bilbo align <slug>' first.")
 
     alignment = Alignment.load(align_path)
     if not alignment.problematic_regions:
@@ -438,7 +481,7 @@ def run_export(
         from .assemble import assemble
 
         source_metadata, cover = _prepare_metadata(
-            l1_audio, l2_audio, book_dir, config, False, log,
+            l1_audio, l2_audio, book_dir, False, log,
         )
 
         # Update author from extracted metadata

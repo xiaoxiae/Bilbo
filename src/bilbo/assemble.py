@@ -82,7 +82,7 @@ def _extract_chunk(
 
     start = min(s.start for s in segs)
     end = max(s.end for s in segs)
-    return slice_audio(audio_path, sr, start, end, config.padding_ms)
+    return slice_audio(audio_path, sr, start, end, config.padding_ms + config.fade_ms)
 
 
 def assemble(
@@ -128,12 +128,12 @@ def assemble(
         pairs = alignment.pairs
         p = log.progress("Assembling") if log else None
 
-        intra_gap = generate_silence(sr, config.intra_gap_ms, channels)
-        inter_gap = generate_silence(sr, config.inter_gap_ms, channels)
+        intra_gap = generate_silence(sr, max(0, config.intra_gap_ms - 2 * config.fade_ms), channels)
+        inter_gap = generate_silence(sr, max(0, config.inter_gap_ms - 2 * config.fade_ms), channels)
 
-        first_lang, second_lang = ("l1", "l2") if config.order == "l1-first" else ("l2", "l1")
-        first_wav = l1_wav if first_lang == "l1" else l2_wav
-        second_wav = l2_wav if first_lang == "l1" else l1_wav
+        first_lang, second_lang = ("l1", "l2")
+        first_wav = l1_wav
+        second_wav = l2_wav
 
         # Collect LLM-merged metadata (ran in parallel with preprocessing)
         text_meta: dict[str, str] | None = None
@@ -172,8 +172,8 @@ def assemble(
                     exporter.write(start_tone)
                     exporter.write(tone_gap)
 
-                chunk1 = apply_fade(_extract_chunk(pair, first_wav, sr, first_lang, config), sr)
-                chunk2 = apply_fade(_extract_chunk(pair, second_wav, sr, second_lang, config), sr)
+                chunk1 = apply_fade(_extract_chunk(pair, first_wav, sr, first_lang, config), sr, config.fade_ms)
+                chunk2 = apply_fade(_extract_chunk(pair, second_wav, sr, second_lang, config), sr, config.fade_ms)
 
                 if len(chunk1) > 0:
                     exporter.write(chunk1)
@@ -206,8 +206,8 @@ def assemble(
 
         # Post-process: embed cover art and chapters
         out_file = output_path.with_suffix(f".{config.format}")
-        need_cover = config.embed_cover and cover_path and cover_path.exists()
-        need_chapters = config.embed_chapters and metadata and (
+        need_cover = cover_path and cover_path.exists()
+        need_chapters = metadata and (
             metadata[0].chapters or metadata[1].chapters
         )
 
@@ -218,7 +218,7 @@ def assemble(
                 l1_meta, l2_meta = metadata  # type: ignore[misc]
                 mapped_chapters = map_chapters_to_output(
                     l1_meta.chapters, l2_meta.chapters,
-                    alignment, pair_offsets_ms, config.order,
+                    alignment, pair_offsets_ms,
                     llm_merge=config.llm_merge,
                 )
                 if log and mapped_chapters:

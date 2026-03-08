@@ -13,4 +13,4 @@ def test_export_config_defaults():
     assert c.intra_gap_ms == 300
     assert c.inter_gap_ms == 600
     assert c.format == "m4b"
-    assert c.order == "l1-first"
+    assert c.fade_ms == 15

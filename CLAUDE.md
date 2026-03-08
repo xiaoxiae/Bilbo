@@ -14,7 +14,10 @@ uv sync
 
 # Run CLI
 bilbo process --l1-audio en.mp3 --l2-audio de.mp3 --l1-lang en --l2-lang de --title "Book"
-bilbo export <slug>
+bilbo transcribe <slug> [--whisper-model] [--device]
+bilbo segment <slug>
+bilbo align <slug> [--device]
+bilbo export <slug> [--intra-gap] [--inter-gap] [--format] [--no-warn-noise] [--no-llm-merge]
 bilbo list
 bilbo info <slug>
 bilbo delete <slug>
@@ -57,7 +60,7 @@ Stage modules accept an optional `log: PipelineLog | None` or `on_progress: Call
 ## Conventions
 
 - **Atomic file writes**: write to `.tmp` then rename
-- **Skip-if-exists**: pipeline checks for intermediate files; use `--force` to reprocess
+- **Skip-if-exists**: pipeline checks for intermediate files; re-run individual stage commands to reprocess
 - Type hints with `from __future__ import annotations`
 - External runtime requirements: `ffmpeg` and `ffprobe` must be on PATH
 - Tests use `tmp_library` fixture (`conftest.py`) which creates an isolated `Library(root=tmp_path)` — never touches `~/.bilbo/`

@@ -157,7 +157,6 @@ def map_chapters_to_output(
     l2_chapters: list[SourceChapter],
     alignment: Alignment,
     pair_offsets_ms: list[tuple[int, int]],
-    lang_order: str = "l1-first",  # noqa: ARG001
     llm_merge: bool = False,
 ) -> list[ChapterMarker]:
     """Map source chapters to output timestamps using pair offsets.

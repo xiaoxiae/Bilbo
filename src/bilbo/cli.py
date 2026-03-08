@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 import click
@@ -30,6 +31,35 @@ def _validate_lang(ctx, param, value):
     return value
 
 
+def export_options(f):
+    """Shared export options for process and export commands."""
+    @click.option("--intra-gap", type=int, default=300, help="Gap between L1/L2 within a pair (ms)")
+    @click.option("--inter-gap", type=int, default=600, help="Gap between pairs (ms)")
+    @click.option("--fade-ms", type=int, default=15, help="Fade duration applied outside speech (ms)")
+    @click.option("--format", "fmt", type=click.Choice(["m4b", "mp3", "txt"]), default="m4b")
+    @click.option("--no-warn-noise", is_flag=True, help="Skip warning tones around misaligned regions")
+    @click.option("--no-llm-merge", is_flag=True, help="Disable LLM-powered metadata merging")
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        return f(*args, **kwargs)
+    return wrapper
+
+
+def _make_export_config(intra_gap: int, inter_gap: int, fade_ms: int, fmt: str, no_warn_noise: bool, no_llm_merge: bool) -> ExportConfig:
+    return ExportConfig(
+        intra_gap_ms=intra_gap, inter_gap_ms=inter_gap, fade_ms=fade_ms,
+        format=fmt, warn_noise=not no_warn_noise, llm_merge=not no_llm_merge,
+    )
+
+
+def _get_book_meta(slug: str):
+    lib = Library()
+    meta = lib.get(slug)
+    if meta is None:
+        raise click.ClickException(f"Book '{slug}' not found.")
+    return meta
+
+
 @click.group()
 @click.version_option(package_name="bilbo")
 def cli():
@@ -43,29 +73,14 @@ def cli():
 @click.option("--l1-lang", required=True, callback=_validate_lang, help="L1 language code (e.g. en)")
 @click.option("--l2-lang", required=True, callback=_validate_lang, help="L2 language code (e.g. de)")
 @click.option("--title", required=True, help="Book title")
-@click.option("--intra-gap", type=int, default=300, help="Gap between L1/L2 within a pair (ms)")
-@click.option("--inter-gap", type=int, default=600, help="Gap between pairs (ms)")
-@click.option("--format", "fmt", type=click.Choice(["m4b", "mp3", "txt"]), default="m4b")
 @click.option("--whisper-model", default="large-v3-turbo", help="Whisper model size")
 @click.option("--device", default="auto", help="Compute device (cpu/cuda/auto)")
-@click.option("--order", type=click.Choice(["l1-first", "l2-first"]), default="l1-first")
-@click.option("--no-export", is_flag=True, help="Stop after alignment, skip audio export")
-@click.option("--force", is_flag=True, help="Re-run all stages")
-@click.option("--batch-size", type=int, default=None, help="Whisper batch size (default: 16)")
-@click.option("--no-cover", is_flag=True, help="Skip embedding cover art")
-@click.option("--no-chapters", is_flag=True, help="Skip embedding chapter markers")
-@click.option("--no-warn-noise", is_flag=True, help="Skip warning tones around misaligned regions")
-@click.option("--author", default=None, help="Override author metadata")
-@click.option("--no-llm-merge", is_flag=True, help="Disable LLM-powered metadata merging")
-def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, fmt, whisper_model, device, order, no_export, force, batch_size, no_cover, no_chapters, no_warn_noise, author, no_llm_merge):
+@export_options
+def process(l1_audio, l2_audio, l1_lang, l2_lang, title, whisper_model, device, intra_gap, inter_gap, fade_ms, fmt, no_warn_noise, no_llm_merge):
     """Run the full processing pipeline."""
     from .pipeline import run_pipeline
 
-    config = ExportConfig(
-        intra_gap_ms=intra_gap, inter_gap_ms=inter_gap, format=fmt, order=order,
-        embed_cover=not no_cover, embed_chapters=not no_chapters,
-        warn_noise=not no_warn_noise, llm_merge=not no_llm_merge,
-    )
+    config = _make_export_config(intra_gap, inter_gap, fade_ms, fmt, no_warn_noise, no_llm_merge)
     meta = run_pipeline(
         l1_audio=l1_audio,
         l2_audio=l2_audio,
@@ -74,47 +89,87 @@ def process(l1_audio, l2_audio, l1_lang, l2_lang, title, intra_gap, inter_gap, f
         title=title,
         model_size=whisper_model,
         device=device,
-        no_export=no_export,
         export_config=config,
-        force=force,
-        batch_size=batch_size,
     )
-    if author:
-        meta.author = author
-        from .library import Library
-        Library().add_or_update(meta)
     click.echo(f"\nBook '{meta.title}' saved as '{meta.slug}'.")
 
 
 @cli.command("export")
 @click.argument("slug")
-@click.option("--intra-gap", type=int, default=300, help="Gap between L1/L2 within a pair (ms)")
-@click.option("--inter-gap", type=int, default=600, help="Gap between pairs (ms)")
-@click.option("--format", "fmt", type=click.Choice(["m4b", "mp3", "txt"]), default="m4b")
-@click.option("--order", type=click.Choice(["l1-first", "l2-first"]), default="l1-first")
-@click.option("--no-cover", is_flag=True, help="Skip embedding cover art")
-@click.option("--no-chapters", is_flag=True, help="Skip embedding chapter markers")
-@click.option("--no-warn-noise", is_flag=True, help="Skip warning tones around misaligned regions")
-@click.option("--author", default=None, help="Override author metadata")
-@click.option("--no-llm-merge", is_flag=True, help="Disable LLM-powered metadata merging")
-def export_cmd(slug, intra_gap, inter_gap, fmt, order, no_cover, no_chapters, no_warn_noise, author, no_llm_merge):
+@export_options
+def export_cmd(slug, intra_gap, inter_gap, fade_ms, fmt, no_warn_noise, no_llm_merge):
     """Export an interleaved audiobook from an already-processed book."""
     from .pipeline import run_export
 
-    config = ExportConfig(
-        intra_gap_ms=intra_gap, inter_gap_ms=inter_gap, format=fmt, order=order,
-        embed_cover=not no_cover, embed_chapters=not no_chapters,
-        warn_noise=not no_warn_noise, llm_merge=not no_llm_merge,
-    )
-    if author:
-        from .library import Library
-        lib = Library()
-        meta = lib.get(slug)
-        if meta:
-            meta.author = author
-            lib.add_or_update(meta)
+    config = _make_export_config(intra_gap, inter_gap, fade_ms, fmt, no_warn_noise, no_llm_merge)
     try:
         run_export(slug, config)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+
+@cli.command("transcribe")
+@click.argument("slug")
+@click.option("--whisper-model", default="large-v3-turbo", help="Whisper model size")
+@click.option("--device", default="auto", help="Compute device (cpu/cuda/auto)")
+def transcribe_cmd(slug, whisper_model, device):
+    """Run transcription stage for a book."""
+    from .pipeline import run_pipeline
+
+    meta = _get_book_meta(slug)
+    run_pipeline(
+        l1_audio=Path(meta.l1_audio),
+        l2_audio=Path(meta.l2_audio),
+        l1_lang=meta.l1_lang,
+        l2_lang=meta.l2_lang,
+        title=meta.title,
+        model_size=whisper_model,
+        device=device,
+        from_stage=1,
+        to_stage=1,
+    )
+
+
+@cli.command("segment")
+@click.argument("slug")
+def segment_cmd(slug):
+    """Run segmentation stage for a book."""
+    from .pipeline import run_pipeline
+
+    meta = _get_book_meta(slug)
+    try:
+        run_pipeline(
+            l1_audio=Path(meta.l1_audio),
+            l2_audio=Path(meta.l2_audio),
+            l1_lang=meta.l1_lang,
+            l2_lang=meta.l2_lang,
+            title=meta.title,
+            from_stage=2,
+            to_stage=2,
+        )
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+
+@cli.command("align")
+@click.argument("slug")
+@click.option("--device", default="auto", help="Compute device (cpu/cuda/auto)")
+def align_cmd(slug, device):
+    """Run alignment stage for a book."""
+    from .pipeline import run_pipeline
+
+    meta = _get_book_meta(slug)
+    try:
+        run_pipeline(
+            l1_audio=Path(meta.l1_audio),
+            l2_audio=Path(meta.l2_audio),
+            l1_lang=meta.l1_lang,
+            l2_lang=meta.l2_lang,
+            title=meta.title,
+            device=device,
+            from_stage=3,
+            to_stage=3,
+        )
     except ValueError as e:
         raise click.ClickException(str(e))
 
