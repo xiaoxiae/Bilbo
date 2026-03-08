@@ -94,18 +94,20 @@ def assemble(
     log: PipelineLog | None = None,
     metadata: tuple[SourceMetadata, SourceMetadata] | None = None,
     cover_path: Path | None = None,
+    lang_labels: tuple[str, str] | None = None,
 ) -> None:
     target_sr = TARGET_SR
+    l1_l, l2_l = lang_labels or ("L1", "L2")
 
-    pp = log.parallel(["L1", "L2"], "Preprocessing", unit="s") if log else None
+    pp = log.parallel([l1_l, l2_l], "Preprocessing", unit="s") if log else None
     with ThreadPoolExecutor(max_workers=3) as pool:
         f1 = pool.submit(
             preprocess_audio, l1_audio_path, target_sr,
-            on_progress=pp.callback("L1") if pp else None,
+            on_progress=pp.callback(l1_l) if pp else None,
         )
         f2 = pool.submit(
             preprocess_audio, l2_audio_path, target_sr,
-            on_progress=pp.callback("L2") if pp else None,
+            on_progress=pp.callback(l2_l) if pp else None,
         )
         # Run LLM metadata merge in parallel with preprocessing
         llm_future = None
@@ -123,7 +125,7 @@ def assemble(
             l2_info = sf.info(str(l2_wav))
             l1_dur = l1_info.frames / sr
             l2_dur = l2_info.frames / sr
-            pp.finish(f"Preprocessed (L1: {l1_dur:.0f}s, L2: {l2_dur:.0f}s)")
+            pp.finish(f"Preprocessed ({l1_l}: {l1_dur:.0f}s, {l2_l}: {l2_dur:.0f}s)")
 
         pairs = alignment.pairs
         p = log.progress("Assembling") if log else None
@@ -142,7 +144,7 @@ def assemble(
             if log and text_meta:
                 log.done("Metadata merged via LLM")
                 for k, v in text_meta.items():
-                    log.info(f"  {k}: {v}")
+                    log.detail(f"{k}: {v}")
         elif metadata:
             l1_meta, l2_meta = metadata
             text_meta = _build_text_meta(l1_meta, l2_meta, config, None)

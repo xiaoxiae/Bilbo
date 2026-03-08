@@ -72,6 +72,13 @@ def preprocess_audio(
         text=True,
     )
 
+    # Drain stderr in background to prevent pipe buffer deadlock
+    stderr_result: list[str] = []
+    def _drain_stderr():
+        stderr_result.append(proc.stderr.read() if proc.stderr else "")
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
     assert proc.stdout is not None
     for line in proc.stdout:
         line = line.strip()
@@ -84,10 +91,12 @@ def preprocess_audio(
             if on_progress is not None:
                 on_progress(secs, duration)
 
+    stderr_thread.join()
     proc.wait()
     if proc.returncode != 0:
-        stderr = proc.stderr.read() if proc.stderr else ""
-        raise subprocess.CalledProcessError(proc.returncode, "ffmpeg", stderr=stderr)
+        raise subprocess.CalledProcessError(
+            proc.returncode, "ffmpeg", stderr=stderr_result[0] if stderr_result else ""
+        )
 
     return Path(tmp_path)
 
@@ -184,6 +193,8 @@ class AudioExporter:
         self.total_samples = 0
         self._proc: subprocess.Popen[bytes] | None = None
         self._progress_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._stderr_data: bytes = b""
 
     @property
     def duration(self) -> float:
@@ -215,6 +226,8 @@ class AudioExporter:
         )
         self._progress_thread = threading.Thread(target=self._read_progress, daemon=True)
         self._progress_thread.start()
+        self._stderr_thread = threading.Thread(target=self._read_stderr, daemon=True)
+        self._stderr_thread.start()
         return self
 
     def write(self, chunk: np.ndarray) -> None:
@@ -235,17 +248,22 @@ class AudioExporter:
                     continue
                 self.on_progress(us / 1_000_000, self.total_samples / self.sr)
 
+    def _read_stderr(self) -> None:
+        assert self._proc is not None and self._proc.stderr is not None
+        self._stderr_data = self._proc.stderr.read()
+
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
         assert self._proc is not None
         if self._proc.stdin:
             self._proc.stdin.close()
         if self._progress_thread:
             self._progress_thread.join()
+        if self._stderr_thread:
+            self._stderr_thread.join()
         self._proc.wait()
         if exc_type is None and self._proc.returncode != 0:
-            stderr = self._proc.stderr.read() if self._proc.stderr else b""
             raise subprocess.CalledProcessError(
-                self._proc.returncode, "ffmpeg", stderr=stderr
+                self._proc.returncode, "ffmpeg", stderr=self._stderr_data
             )
 
 

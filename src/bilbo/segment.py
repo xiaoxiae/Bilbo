@@ -125,11 +125,14 @@ def refine_timestamps(
     threshold: float = 0.005,
     max_extend_ms: int = 300,
     win_ms: int = 10,
-) -> SegmentedText:
+) -> tuple[SegmentedText, dict]:
     """Refine segment end timestamps using energy-based speech boundary detection.
 
     Scans forward from each segment's end in small windows until RMS drops
     below threshold, extending the end to the actual speech boundary.
+
+    Returns (segmented_text, stats_dict) where stats_dict has keys:
+    extended, total, avg_ms.
     """
     wav_path = _decode_to_wav(audio_path)
     try:
@@ -176,13 +179,15 @@ def refine_timestamps(
                 extended_count += 1
                 extensions_ms.append(extend_sec * 1000)
 
+        total = len(segmented.sentences)
+        avg_ms = (sum(extensions_ms) / len(extensions_ms)) if extensions_ms else 0.0
+        stats = {"extended": extended_count, "total": total, "avg_ms": avg_ms}
+
         if log:
-            total = len(segmented.sentences)
             if extended_count > 0:
-                avg = sum(extensions_ms) / len(extensions_ms)
                 log.info(
                     f"Extended {extended_count}/{total} segment ends "
-                    f"(avg +{avg:.0f}ms)"
+                    f"(avg +{avg_ms:.0f}ms)"
                 )
             else:
                 log.info(f"Refined timestamps: 0/{total} segments extended")
@@ -190,4 +195,4 @@ def refine_timestamps(
     finally:
         wav_path.unlink(missing_ok=True)
 
-    return segmented
+    return segmented, stats

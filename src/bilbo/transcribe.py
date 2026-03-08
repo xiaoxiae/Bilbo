@@ -59,4 +59,7 @@ def transcribe(
         if on_progress:
             on_progress(seg.end, duration)
 
+    if on_progress:
+        on_progress(duration, duration)
+
     return segments

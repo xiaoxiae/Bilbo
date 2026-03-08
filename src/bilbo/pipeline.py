@@ -113,6 +113,8 @@ def _prepare_metadata(
     book_dir: Path,
     force: bool,
     log: PipelineLog,
+    l1_label: str = "L1",
+    l2_label: str = "L2",
 ):
     """Extract, cache, and merge metadata from source audiobooks.
 
@@ -122,33 +124,36 @@ def _prepare_metadata(
 
     if not force and meta_cache.exists():
         l1_meta, l2_meta = load_source_metadata(meta_cache)
+        a = log.activity("Loading cached metadata...")
+        a.done("Metadata loaded")
     else:
-        log.info("Extracting source metadata...")
+        a = log.activity("Extracting metadata...")
         l1_meta = probe_metadata(l1_audio, log=log)
         l2_meta = probe_metadata(l2_audio, log=log)
         save_source_metadata(l1_meta, l2_meta, meta_cache)
+        a.done("Metadata extracted")
 
-    # Log extracted metadata
+    # Log extracted metadata as dimmed details
     if l1_meta.title or l2_meta.title:
         l1_t = l1_meta.title or "?"
         l2_t = l2_meta.title or "?"
-        log.info(f"Titles: {l1_t} / {l2_t}")
+        log.detail(f"Titles: {l1_t} / {l2_t}")
     if l1_meta.artist or l2_meta.artist:
         l1_a = l1_meta.artist or "?"
         l2_a = l2_meta.artist or "?"
-        log.info(f"Artists: {l1_a} / {l2_a}")
+        log.detail(f"Artists: {l1_a} / {l2_a}")
     l1_ch = len(l1_meta.chapters)
     l2_ch = len(l2_meta.chapters)
     if l1_ch or l2_ch:
-        log.info(f"Chapters: L1={l1_ch}, L2={l2_ch}")
+        log.detail(f"Chapters: {l1_label}={l1_ch}, {l2_label}={l2_ch}")
     if l1_meta.has_cover and l2_meta.has_cover:
-        log.info("Cover art: both sources")
+        log.detail("Cover art: both sources")
     elif l1_meta.has_cover:
-        log.info("Cover art: L1 only")
+        log.detail(f"Cover art: {l1_label} only")
     elif l2_meta.has_cover:
-        log.info("Cover art: L2 only")
+        log.detail(f"Cover art: {l2_label} only")
     else:
-        log.info("Cover art: none")
+        log.detail("Cover art: none")
 
     # Extract and merge covers
     cover_path: Path | None = None
@@ -215,18 +220,22 @@ def run_pipeline(
 
     # Copy input audio into the book directory so we don't depend on
     # the original files staying in place.
+    log.stage(0, "Input")
     input_dir = book_dir / "input"
     input_dir.mkdir(exist_ok=True)
     l1_copy = input_dir / f"l1{l1_audio.suffix}"
     l2_copy = input_dir / f"l2{l2_audio.suffix}"
-    if not l1_copy.exists():
+    need_copy = not l1_copy.exists() or not l2_copy.exists()
+    if need_copy:
         import shutil
-        log.info("Copying L1 audio...")
-        shutil.copy2(l1_audio, l1_copy)
-    if not l2_copy.exists():
-        import shutil
-        log.info("Copying L2 audio...")
-        shutil.copy2(l2_audio, l2_copy)
+        a = log.activity("Copying input audio...")
+        if not l1_copy.exists():
+            shutil.copy2(l1_audio, l1_copy)
+        if not l2_copy.exists():
+            shutil.copy2(l2_audio, l2_copy)
+        a.done("Input audio copied")
+    else:
+        log.skip("cached")
     l1_audio = l1_copy
     l2_audio = l2_copy
 
@@ -240,6 +249,9 @@ def run_pipeline(
     )
     meta.l1_audio = str(l1_copy)
     meta.l2_audio = str(l2_copy)
+
+    l1_label = l1_lang.upper()
+    l2_label = l2_lang.upper()
 
     # Check prerequisites when starting from a later stage
     if from_stage is not None and from_stage > 1 and existing:
@@ -261,11 +273,12 @@ def run_pipeline(
     if need_l1 or need_l2:
         from .transcribe import transcribe, load_whisper_model
 
-        log.info(f"Loading Whisper model ({model_size}) on {device}...")
+        a = log.activity("Loading Whisper model...", detail=f"({model_size}, {device})")
         model = load_whisper_model(model_size, device)
+        a.done("Model loaded")
 
         if need_l1 and need_l2:
-            pp = log.parallel(["L1", "L2"], "Transcribing", unit="s")
+            pp = log.parallel([l1_label, l2_label], "Transcribing", unit="s")
 
             def _transcribe_and_save(audio_path, lang, out_path, label):
                 segs = transcribe(
@@ -276,13 +289,13 @@ def run_pipeline(
                 return segs
 
             with ThreadPoolExecutor(max_workers=2) as pool:
-                f1 = pool.submit(_transcribe_and_save, l1_audio, l1_lang, raw_l1_path, "L1")
-                f2 = pool.submit(_transcribe_and_save, l2_audio, l2_lang, raw_l2_path, "L2")
+                f1 = pool.submit(_transcribe_and_save, l1_audio, l1_lang, raw_l1_path, l1_label)
+                f2 = pool.submit(_transcribe_and_save, l2_audio, l2_lang, raw_l2_path, l2_label)
                 raw_l1 = f1.result()
                 raw_l2 = f2.result()
-            pp.finish(f"L1: {len(raw_l1)} segments, L2: {len(raw_l2)} segments")
+            pp.finish(f"{l1_label}: {len(raw_l1)} segments, {l2_label}: {len(raw_l2)} segments")
         elif need_l1:
-            p = log.progress("Transcribing L1", unit="s")
+            p = log.progress(f"Transcribing {l1_label}", unit="s")
             raw_l1 = transcribe(
                 l1_audio, l1_lang, model=model,
                 on_progress=p.update,
@@ -292,7 +305,7 @@ def run_pipeline(
             raw_l2 = _load_raw_segments(raw_l2_path)
         else:
             raw_l1 = _load_raw_segments(raw_l1_path)
-            p = log.progress("Transcribing L2", unit="s")
+            p = log.progress(f"Transcribing {l2_label}", unit="s")
             raw_l2 = transcribe(
                 l2_audio, l2_lang, model=model,
                 on_progress=p.update,
@@ -312,6 +325,7 @@ def run_pipeline(
 
     if to_stage is not None and to_stage < 2:
         log.info(f"Stopping after stage {to_stage}.")
+        log.summary()
         return meta
 
     # Stage 2: Segmentation
@@ -331,28 +345,39 @@ def run_pipeline(
 
         def _segment_and_save(raw_segs, lang, audio, out_path):
             result = segment_text(raw_segs, lang)
-            result = refine_timestamps(result, audio, log=log)
+            result, refine_stats = refine_timestamps(result, audio)
             result.save(out_path)
-            return result
+            return result, refine_stats
+
+        def _show_refine_stats(label, stats):
+            if stats["extended"]:
+                log.detail(
+                    f"{label}: extended {stats['extended']}/{stats['total']}"
+                    f" ends (avg +{stats['avg_ms']:.0f}ms)"
+                )
 
         if need_seg_l1 and need_seg_l2:
-            log.info("Segmenting L1 + L2 in parallel...")
+            act = log.activity("Segmenting...")
             with ThreadPoolExecutor(max_workers=2) as pool:
                 f1 = pool.submit(_segment_and_save, raw_l1, l1_lang, l1_audio, seg_l1_path)
                 f2 = pool.submit(_segment_and_save, raw_l2, l2_lang, l2_audio, seg_l2_path)
-                seg_l1 = f1.result()
-                seg_l2 = f2.result()
-            log.done(f"L1: {len(seg_l1.sentences)} sentences, L2: {len(seg_l2.sentences)} sentences")
+                seg_l1, stats_l1 = f1.result()
+                seg_l2, stats_l2 = f2.result()
+            act.done(f"{l1_label}: {len(seg_l1.sentences)} sentences, {l2_label}: {len(seg_l2.sentences)} sentences")
+            _show_refine_stats(l1_label, stats_l1)
+            _show_refine_stats(l2_label, stats_l2)
         elif need_seg_l1:
-            log.info("Segmenting L1...")
-            seg_l1 = _segment_and_save(raw_l1, l1_lang, l1_audio, seg_l1_path)
-            log.done(f"L1: {len(seg_l1.sentences)} sentences")
+            act = log.activity(f"Segmenting {l1_label}...")
+            seg_l1, stats_l1 = _segment_and_save(raw_l1, l1_lang, l1_audio, seg_l1_path)
+            act.done(f"{l1_label}: {len(seg_l1.sentences)} sentences")
+            _show_refine_stats(l1_label, stats_l1)
             seg_l2 = SegmentedText.load(seg_l2_path)
         else:
             seg_l1 = SegmentedText.load(seg_l1_path)
-            log.info("Segmenting L2...")
-            seg_l2 = _segment_and_save(raw_l2, l2_lang, l2_audio, seg_l2_path)
-            log.done(f"L2: {len(seg_l2.sentences)} sentences")
+            act = log.activity(f"Segmenting {l2_label}...")
+            seg_l2, stats_l2 = _segment_and_save(raw_l2, l2_lang, l2_audio, seg_l2_path)
+            act.done(f"{l2_label}: {len(seg_l2.sentences)} sentences")
+            _show_refine_stats(l2_label, stats_l2)
 
     if 2 not in meta.stages_completed:
         meta.stages_completed.append(2)
@@ -360,6 +385,7 @@ def run_pipeline(
 
     if to_stage is not None and to_stage < 3:
         log.info(f"Stopping after stage {to_stage}.")
+        log.summary()
         return meta
 
     # Stage 3: Alignment
@@ -402,6 +428,7 @@ def run_pipeline(
     # Stage 4: Export
     if to_stage is not None and to_stage < 4:
         log.info(f"Stopping after stage {to_stage}.")
+        log.summary()
         return meta
 
     config = export_config or ExportConfig()
@@ -418,6 +445,7 @@ def run_pipeline(
 
         source_metadata, cover = _prepare_metadata(
             l1_audio, l2_audio, book_dir, force[4], log,
+            l1_label=l1_label, l2_label=l2_label,
         )
 
         # Update author from extracted metadata
@@ -429,6 +457,7 @@ def run_pipeline(
         assemble(
             alignment, l1_audio, l2_audio, config, output_path,
             log=log, metadata=source_metadata, cover_path=cover,
+            lang_labels=(l1_label, l2_label),
         )
 
     if output_name not in meta.exports:
@@ -437,6 +466,7 @@ def run_pipeline(
         meta.stages_completed.append(4)
     lib.add_or_update(meta)
 
+    log.summary()
     return meta
 
 
@@ -478,10 +508,14 @@ def run_export(
         if not l2_audio.exists():
             raise ValueError(f"L2 audio not found: {l2_audio}")
 
+        l1_label = meta.l1_lang.upper()
+        l2_label = meta.l2_lang.upper()
+
         from .assemble import assemble
 
         source_metadata, cover = _prepare_metadata(
             l1_audio, l2_audio, book_dir, False, log,
+            l1_label=l1_label, l2_label=l2_label,
         )
 
         # Update author from extracted metadata
@@ -494,8 +528,11 @@ def run_export(
         assemble(
             alignment, l1_audio, l2_audio, config, output_path,
             log=log, metadata=source_metadata, cover_path=cover,
+            lang_labels=(l1_label, l2_label),
         )
 
     if output_name not in meta.exports:
         meta.exports.append(output_name)
     lib.add_or_update(meta)
+
+    log.summary()

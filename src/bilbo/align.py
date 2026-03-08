@@ -160,23 +160,20 @@ def _two_pass_align(
     l2_emb: np.ndarray,
     l1_texts: list[str],
     l2_texts: list[str],
-    on_progress: Callable[[float, float | None], None] | None = None,
+    on_gap_progress: Callable[[int, int], None] | None = None,
     log: PipelineLog | None = None,
-) -> list[tuple[list[int], list[int], float]]:
-    """Two-pass alignment: find anchors, then fill between them."""
+) -> tuple[list[tuple[list[int], list[int], float]], list[tuple[int, int]]]:
+    """Two-pass alignment: find anchors, then fill between them.
+
+    Returns (pairs, anchors).
+    """
     n = len(l1_emb)
     m = len(l2_emb)
 
-    if on_progress:
-        on_progress(0, 2)
-
+    a = log.activity("Finding anchors...") if log else None
     anchors = _find_anchors(l1_emb, l2_emb, l1_texts, l2_texts)
-
-    if log:
-        log.info(f"Found {len(anchors)} anchors")
-
-    if on_progress:
-        on_progress(1, 2)
+    if a:
+        a.done(f"{len(anchors)} anchors")
 
     # Build boundary list: gaps before first anchor, between anchors, after last anchor
     boundaries = []
@@ -188,7 +185,6 @@ def _two_pass_align(
         prev_j = aj + 1
     # After last anchor
     boundaries.append((prev_i, n, prev_j, m))
-
 
     result: list[tuple[list[int], list[int], float]] = []
     for idx, (i_start, i_end, j_start, j_end) in enumerate(boundaries):
@@ -202,10 +198,10 @@ def _two_pass_align(
             anchor_score = float(l1_emb[ai] @ l2_emb[aj])
             result.append(([ai], [aj], anchor_score))
 
-    if on_progress:
-        on_progress(2, 2)
+        if on_gap_progress:
+            on_gap_progress(idx + 1, len(boundaries))
 
-    return result
+    return result, anchors
 
 
 def _silence_hf_logging() -> None:
@@ -240,22 +236,32 @@ def align_texts(
     log: PipelineLog | None = None,
 ) -> Alignment:
     resolved = _resolve_device(device)
-    if log:
-        log.info(f"Computing embeddings (LaBSE) on {resolved}...")
 
+    # Phase 1: Load model
+    a = log.activity("Loading LaBSE model...", detail=f"({resolved})") if log else None
+    from sentence_transformers import SentenceTransformer
+    _silence_hf_logging()
+    model = SentenceTransformer("sentence-transformers/LaBSE", device=resolved)
+    if a:
+        a.done("LaBSE model loaded")
+
+    # Phase 2: Compute embeddings
     l1_texts = [s.text for s in l1.sentences]
     l2_texts = [s.text for s in l2.sentences]
-
-    from sentence_transformers import SentenceTransformer
-
-    _silence_hf_logging()
-    model = SentenceTransformer("sentence-transformers/LaBSE", device=_resolve_device(device))
+    a = log.activity("Computing embeddings...") if log else None
     all_emb = _normalize(model.encode(l1_texts + l2_texts, show_progress_bar=False, convert_to_numpy=True))
     l1_emb = all_emb[:len(l1_texts)]
     l2_emb = all_emb[len(l1_texts):]
+    if a:
+        a.done("Embeddings computed")
 
-    p = log.progress("Alignment", unit="") if log else None
-    raw_pairs = _two_pass_align(l1_emb, l2_emb, l1_texts, l2_texts, on_progress=p.update if p else None, log=log)
+    # Phase 3+4: Find anchors + fill gaps (handled inside _two_pass_align)
+    p = log.progress("Filling gaps") if log else None
+    raw_pairs, _anchors = _two_pass_align(
+        l1_emb, l2_emb, l1_texts, l2_texts,
+        on_gap_progress=p.update if p else None,
+        log=log,
+    )
     if p:
         p.finish(f"{len(raw_pairs)} pairs")
 
