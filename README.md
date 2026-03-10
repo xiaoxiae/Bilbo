@@ -24,14 +24,6 @@ https://github.com/user-attachments/assets/aff6c1cb-6f67-43a8-bc9f-3fd6ab3a5c8a
 >
 > **DE:** Der hüfthohe Zaun war baufällig, das Holz, mit der Zeit grau geworden, wurde von ausgefransten Seilen zusammengehalten.
 
-## How it works
-
-1. **Transcription** — Speech-to-text via [faster-whisper](https://github.com/SYSTRAN/faster-whisper) with word-level timestamps
-2. **Segmentation** — Sentence boundary detection via [pySBD](https://github.com/nipunsadvilkar/pySBD)
-3. **Alignment** — Cross-lingual sentence matching using [LaBSE](https://huggingface.co/sentence-transformers/LaBSE) embeddings via [sentence-transformers](https://github.com/UKPLab/sentence-transformers)
-4. **Assembly** — Audio normalization/extraction/interleaving via [ffmpeg](https://www.ffmpeg.org/)
-5. **Metadata** — Cover art + text metadata merging (optionally via local LLM with [ollama](https://ollama.com/))
-
 ## Prerequisites
 
 - Python 3.10+
@@ -72,3 +64,11 @@ bilbo list              # List all books
 bilbo info <slug>       # Show details about a book
 bilbo delete <slug>     # Delete a book
 ```
+
+## How it works
+
+1. **Transcription** — Speech-to-text via [faster-whisper](https://github.com/SYSTRAN/faster-whisper) with word-level timestamps
+2. **Segmentation** — Sentence boundary detection via [pySBD](https://github.com/nipunsadvilkar/pySBD)
+3. **Alignment** — Cross-lingual sentence matching using [LaBSE](https://huggingface.co/sentence-transformers/LaBSE) embeddings via [sentence-transformers](https://github.com/UKPLab/sentence-transformers)
+4. **Assembly** — Audio normalization/extraction/interleaving via [ffmpeg](https://www.ffmpeg.org/)
+5. **Metadata** — Cover art + text metadata merging (optionally via local LLM with [ollama](https://ollama.com/))
