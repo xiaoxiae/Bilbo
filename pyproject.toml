@@ -3,17 +3,25 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "bilbo"
-version = "0.1.0"
+name = "bilbo-audiobook"
+version = "0.1.1"
 description = "Bilingual audiobook interleaver"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
+authors = [
+    { name = "xiaoxiae" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Sound/Audio",
+]
 dependencies = [
     "faster-whisper",
     "pysbd",
     "sentence-transformers",
-    "pydub",
-    "pyloudnorm",
     "click",
     "soundfile",
     "numpy",
@@ -29,6 +37,11 @@ bilbo = "bilbo.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bilbo"]
+
+[project.urls]
+Homepage = "https://github.com/xiaoxiae/Bilbo"
+Repository = "https://github.com/xiaoxiae/Bilbo"
+Issues = "https://github.com/xiaoxiae/Bilbo/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

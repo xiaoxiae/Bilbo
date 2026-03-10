@@ -35,16 +35,19 @@ https://github.com/user-attachments/assets/aff6c1cb-6f67-43a8-bc9f-3fd6ab3a5c8a
 ## Prerequisites
 
 - Python 3.10+
-- [uv](https://docs.astral.sh/uv/) package manager
 - `ffmpeg` and `ffprobe` on PATH
 - CUDA-capable GPU recommended (CPU works but is much slower)
 
 ## Installation
 
 ```bash
-git clone https://github.com/xiaoxiae/Bilbo
-cd Bilbo
-uv sync
+pip install bilbo-audiobook
+```
+
+Or with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv tool install bilbo-audiobook
 ```
 
 ## Usage

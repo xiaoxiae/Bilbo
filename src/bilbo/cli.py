@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import functools
+import shutil
 from pathlib import Path
 
 import click
 
+from . import __version__
 from .library import Library
 from .models import ExportConfig
 
@@ -61,10 +63,15 @@ def _get_book_meta(slug: str):
 
 
 @click.group()
-@click.version_option(package_name="bilbo")
+@click.version_option(version=__version__)
 def cli():
     """Bilingual audiobook interleaver."""
-    pass
+    for tool in ("ffmpeg", "ffprobe"):
+        if shutil.which(tool) is None:
+            raise click.ClickException(
+                f"'{tool}' not found on PATH. "
+                f"Please install ffmpeg: https://ffmpeg.org/download.html"
+            )
 
 
 @cli.command()
