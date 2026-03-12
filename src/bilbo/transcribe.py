@@ -20,6 +20,11 @@ def load_whisper_model(
     from faster_whisper import BatchedInferencePipeline as _BatchedPipeline
     from faster_whisper import WhisperModel as _WhisperModel
 
+    if device == "auto":
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
     compute_type = "int8" if device == "cpu" else "float16"
     whisper = _WhisperModel(model_size, device=device, compute_type=compute_type)
     return _BatchedPipeline(whisper)
