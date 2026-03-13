@@ -10,12 +10,11 @@ from .models import BookMeta
 DEFAULT_LIBRARY = Path.home() / ".bilbo"
 
 
-def _slugify(title: str) -> str:
-    slug = title.lower().strip()
-    slug = re.sub(r"[^\w\s-]", "", slug)
-    slug = re.sub(r"[\s_]+", "-", slug)
-    slug = re.sub(r"-+", "-", slug).strip("-")
-    return slug
+def _slugify(text: str) -> str:
+    text = text.lower().strip()
+    text = re.sub(r"[^\w\s-]", "", text)
+    text = re.sub(r"[\s_-]+", "-", text)
+    return text.strip("-") or "book"
 
 
 class Library:
@@ -73,21 +72,41 @@ class Library:
             shutil.rmtree(d)
         return True
 
-    def find_slug(self, title: str) -> str | None:
-        """Return existing slug for this title, or None."""
-        slug = _slugify(title) or "book"
-        if slug in self._read_index():
-            return slug
+    def make_slug(self, title: str) -> str:
+        base = _slugify(title)
+        existing = self._read_index()
+        if base not in existing:
+            return base
+        i = 2
+        while f"{base}-{i}" in existing:
+            i += 1
+        return f"{base}-{i}"
+
+    def find_by_title(self, title: str) -> BookMeta | None:
+        index = self._read_index()
+        for v in index.values():
+            meta = BookMeta.from_dict(v)
+            if meta.title == title:
+                return meta
         return None
 
-    def make_slug(self, title: str) -> str:
-        slug = _slugify(title)
-        if not slug:
-            slug = "book"
-        existing = self._read_index()
-        if slug not in existing:
-            return slug
-        i = 2
-        while f"{slug}-{i}" in existing:
-            i += 1
-        return f"{slug}-{i}"
+    def rename(self, old_title: str, new_title: str) -> BookMeta | None:
+        """Rename a book: update title, slug, and move data directory."""
+        meta = self.find_by_title(old_title)
+        if meta is None:
+            return None
+        old_slug = meta.slug
+        new_slug = self.make_slug(new_title)
+        old_dir = self.book_dir(old_slug)
+        new_dir = self.book_dir(new_slug)
+        if old_dir.exists():
+            old_dir.rename(new_dir)
+        meta.l1_audio = meta.l1_audio.replace(old_slug, new_slug)
+        meta.l2_audio = meta.l2_audio.replace(old_slug, new_slug)
+        meta.title = new_title
+        meta.slug = new_slug
+        index = self._read_index()
+        del index[old_slug]
+        index[new_slug] = meta.to_dict()
+        self._write_index(index)
+        return meta

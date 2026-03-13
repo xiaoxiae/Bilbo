@@ -118,6 +118,9 @@ class BookMeta:
     @classmethod
     def from_dict(cls, d: dict) -> BookMeta:
         d = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
+        if "slug" not in d:
+            from .library import _slugify
+            d["slug"] = _slugify(d.get("title", "book"))
         return cls(**d)
 
 

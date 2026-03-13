@@ -1,13 +1,5 @@
-import pytest
-
 from bilbo.library import Library, _slugify
 from bilbo.models import BookMeta
-
-
-def test_slugify():
-    assert _slugify("The Trial") == "the-trial"
-    assert _slugify("  Hello World!  ") == "hello-world"
-    assert _slugify("Über den Wolken") == "über-den-wolken"
 
 
 def test_library_init(tmp_library):
@@ -16,11 +8,20 @@ def test_library_init(tmp_library):
     assert tmp_library.index_path.exists()
 
 
+def test_slugify():
+    assert _slugify("Test Book") == "test-book"
+    assert _slugify("  Hello   World  ") == "hello-world"
+    assert _slugify("Über cool!") == "über-cool"
+    assert _slugify("---") == "book"
+    assert _slugify("") == "book"
+
+
 def test_add_and_get(tmp_library, sample_meta):
     tmp_library.add_or_update(sample_meta)
     retrieved = tmp_library.get("test-book")
     assert retrieved is not None
     assert retrieved.title == "Test Book"
+    assert retrieved.slug == "test-book"
     assert retrieved.l1_lang == "en"
 
 
@@ -29,7 +30,7 @@ def test_list_books(tmp_library, sample_meta):
     tmp_library.add_or_update(sample_meta)
     books = tmp_library.list_books()
     assert len(books) == 1
-    assert books[0].slug == "test-book"
+    assert books[0].title == "Test Book"
 
 
 def test_delete(tmp_library, sample_meta):
@@ -40,12 +41,37 @@ def test_delete(tmp_library, sample_meta):
 
 
 def test_make_slug(tmp_library, sample_meta):
-    slug = tmp_library.make_slug("The Trial")
-    assert slug == "the-trial"
+    assert tmp_library.make_slug("The Trial") == "the-trial"
 
     tmp_library.add_or_update(sample_meta)
-    slug2 = tmp_library.make_slug("Test Book")
-    assert slug2 == "test-book-2"
+    assert tmp_library.make_slug("Test Book") == "test-book-2"
+
+
+def test_find_by_title(tmp_library, sample_meta):
+    assert tmp_library.find_by_title("Test Book") is None
+    tmp_library.add_or_update(sample_meta)
+    found = tmp_library.find_by_title("Test Book")
+    assert found is not None
+    assert found.slug == "test-book"
+    assert tmp_library.find_by_title("Other") is None
+
+
+def test_rename(tmp_library, sample_meta):
+    tmp_library.add_or_update(sample_meta)
+    assert tmp_library.book_dir("test-book").exists()
+
+    result = tmp_library.rename("Test Book", "New Title")
+    assert result is not None
+    assert result.title == "New Title"
+    assert result.slug == "new-title"
+    assert tmp_library.get("test-book") is None
+    assert tmp_library.get("new-title") is not None
+    assert tmp_library.book_dir("new-title").exists()
+    assert not tmp_library.book_dir("test-book").exists()
+
+
+def test_rename_not_found(tmp_library):
+    assert tmp_library.rename("nonexistent", "Whatever") is None
 
 
 def test_model_serialization(tmp_path):

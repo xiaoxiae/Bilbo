@@ -20,12 +20,6 @@ if TYPE_CHECKING:
 MOVES = [(1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (2, 3), (3, 1), (3, 2)]
 
 
-def _resolve_device(device: str) -> str:
-    if device != "auto":
-        return device
-    import torch
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
 
 
 def _normalize(emb: np.ndarray) -> np.ndarray:
@@ -235,13 +229,11 @@ def align_texts(
     device: str = "cpu",
     log: PipelineLog | None = None,
 ) -> Alignment:
-    resolved = _resolve_device(device)
-
     # Phase 1: Load model
-    a = log.activity("Loading LaBSE model...", detail=f"({resolved})") if log else None
+    a = log.activity("Loading LaBSE model...", detail=f"({device})") if log else None
     from sentence_transformers import SentenceTransformer
     _silence_hf_logging()
-    model = SentenceTransformer("sentence-transformers/LaBSE", device=resolved)
+    model = SentenceTransformer("sentence-transformers/LaBSE", device=device)
     if a:
         a.done("LaBSE model loaded")
 

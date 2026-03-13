@@ -36,33 +36,77 @@ https://github.com/user-attachments/assets/aff6c1cb-6f67-43a8-bc9f-3fd6ab3a5c8a
 pip install bilbo-audiobook
 ```
 
-Or with [uv](https://docs.astral.sh/uv/):
+or CPU-only as
 
 ```bash
-uv tool install bilbo-audiobook
+pip install bilbo-audiobook[cpu]
 ```
 
 ## Usage
 
 ### Process a book
 
+To process an entire book from start to finish, run
+
+
 ```bash
-bilbo process \
-  --l1-audio en.mp3 \
-  --l2-audio de.mp3 \
-  --l1-lang en \
-  --l2-lang de \
-  --title "My Book"
+bilbo process data/en-5min.m4a data/de-5min.m4a --title "My Book"
 ```
 
-This runs the full pipeline (transcribe, segment, align, export) and stores results in `~/.bilbo/books/<slug>/`.
+which runs the full pipeline (transcribe, segment, align, export) and stores results in `~/.bilbo/books/<title>/`.
+
+```output
+── Stage 0: Input ────────────────────────────────
+  ✓ Input audio copied
+
+── Stage 1: Transcription ────────────────────────
+  ✓ Model loaded  (large-v3-turbo, cuda)
+  ✓ L1: 10 segments, L2: 13 segments
+  Detected L1 language: en
+  Detected L2 language: de
+
+── Stage 2: Segmentation ─────────────────────────
+  ✓ EN: 63 sentences, DE: 64 sentences
+    EN: extended 54/63 ends (avg +141ms)
+    DE: extended 57/64 ends (avg +80ms)
+
+── Stage 3: Alignment ────────────────────────────
+  ✓ LaBSE model loaded  (cuda)
+  ✓ Embeddings computed
+  ⠋ Filling gaps...
+  ✓ 30 anchors
+  ✓ 55 pairs
+
+── Stage 4: Assembly ─────────────────────────────
+  ✓ Metadata extracted
+    Titles: The Alloy of Law: A Mistborn Novel / Hüter des Gesetzes: Mistborn 4
+    Artists: Brandon Sanderson / Brandon Sanderson, Michael Siefener - Übersetzer
+    Chapters: EN=1, DE=2
+    Cover art: both sources
+  ✓ Preprocessed (EN: 295s, DE: 343s)
+  ⠋ Assembling...
+  ✓ Metadata merged via LLM
+    comment: Three hundred years after the events of the Mistborn trilogy, Scadrial is now on the verge of modernity. Yet the old magics of Allomancy and Feruchemy continue to play a role in this reborn world....
+    title: The Alloy of Law: A Mistborn Novel / Hüter des Gesetzes: Mistborn 4
+    artist: Brandon Sanderson
+    album: The Alloy of Law (Unabridged) / Hüter des Gesetzes: Mistborn 4
+  ✓ 10.5 minutes
+  ✓ 1 output chapters
+
+Done in 28.5s  (Stage 0: 0.0s, Stage 1: 4.8s, Stage 2: 0.2s, Stage 3: 5.8s, Stage 4: 16.2s)
+
+Book 'My Book' saved.
+```
+
+If you're running on CPU only, this will take a **VERY** long time, unless you're running a short snippet.
 
 ### Library management
 
 ```bash
-bilbo list              # List all books
-bilbo info <slug>       # Show details about a book
-bilbo delete <slug>     # Delete a book
+bilbo list                          # List all books
+bilbo info <title>                  # Show details about a book
+bilbo rename <title> "New Title"    # Rename a book
+bilbo delete <title>                # Delete a book
 ```
 
 ## How it works

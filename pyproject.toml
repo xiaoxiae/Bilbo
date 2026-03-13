@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bilbo-audiobook"
-version = "0.1.1"
+version = "0.1.2"
 description = "Bilingual audiobook interleaver"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,10 @@ dependencies = [
     "mutagen",
 ]
 
+[project.optional-dependencies]
+cpu = ["torch"]
+cuda = []
+
 [dependency-groups]
 dev = ["pytest"]
 
@@ -42,6 +46,21 @@ packages = ["src/bilbo"]
 Homepage = "https://github.com/xiaoxiae/Bilbo"
 Repository = "https://github.com/xiaoxiae/Bilbo"
 Issues = "https://github.com/xiaoxiae/Bilbo/issues"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv]
+conflicts = [
+    [{ extra = "cpu" }, { extra = "cuda" }],
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

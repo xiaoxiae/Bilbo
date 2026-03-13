@@ -15,15 +15,10 @@ if TYPE_CHECKING:
 
 def load_whisper_model(
     model_size: str = "large-v3-turbo",
-    device: str = "auto",
+    device: str = "cpu",
 ) -> BatchedInferencePipeline:
     from faster_whisper import BatchedInferencePipeline as _BatchedPipeline
     from faster_whisper import WhisperModel as _WhisperModel
-
-    if device == "auto":
-        import torch
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
 
     compute_type = "int8" if device == "cpu" else "float16"
     whisper = _WhisperModel(model_size, device=device, compute_type=compute_type)
@@ -32,13 +27,13 @@ def load_whisper_model(
 
 def transcribe(
     audio_path: Path,
-    lang: str,
+    lang: str | None = None,
     model_size: str = "large-v3-turbo",
-    device: str = "auto",
+    device: str = "cpu",
     model: BatchedInferencePipeline | None = None,
     batch_size: int | None = None,
     on_progress: Callable[[float, float | None], None] | None = None,
-) -> list[Segment]:
+) -> tuple[list[Segment], str]:
     if model is None:
         model = load_whisper_model(model_size, device)
 
@@ -67,4 +62,4 @@ def transcribe(
     if on_progress:
         on_progress(duration, duration)
 
-    return segments
+    return segments, info.language

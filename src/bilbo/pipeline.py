@@ -187,9 +187,9 @@ def _prepare_metadata(
 def run_pipeline(
     l1_audio: Path,
     l2_audio: Path,
-    l1_lang: str,
-    l2_lang: str,
-    title: str,
+    l1_lang: str | None = None,
+    l2_lang: str | None = None,
+    title: str | None = None,
     model_size: str = "large-v3-turbo",
     device: str = "auto",
     export_config: ExportConfig | None = None,
@@ -198,6 +198,19 @@ def run_pipeline(
     to_stage: int | None = None,
 ) -> BookMeta:
     log = PipelineLog()
+
+    # Resolve device: check CUDA availability, warn if requested but missing
+    try:
+        import torch
+        cuda_available = torch.cuda.is_available()
+    except ImportError:
+        cuda_available = False
+    if device == "auto":
+        device = "cuda" if cuda_available else "cpu"
+    elif device == "cuda" and not cuda_available:
+        log.warn("CUDA requested but not available, falling back to CPU")
+        device = "cpu"
+
     lib = library or Library()
     lib.init()
 
@@ -207,13 +220,17 @@ def run_pipeline(
         for i in range(from_stage, end + 1):
             force[i] = True
 
-    existing_slug = lib.find_slug(title)
-    if existing_slug:
-        slug = existing_slug
-        existing = lib.get(slug)
+    # Auto-generate title from filenames if not provided
+    if title is None:
+        stem1 = l1_audio.stem
+        stem2 = l2_audio.stem
+        title = stem1 if stem1 == stem2 else f"{stem1} + {stem2}"
+
+    existing = lib.find_by_title(title)
+    if existing:
+        slug = existing.slug
     else:
         slug = lib.make_slug(title)
-        existing = None
     book_dir = lib.book_dir(slug)
     book_dir.mkdir(parents=True, exist_ok=True)
     (book_dir / "exports").mkdir(exist_ok=True)
@@ -242,16 +259,16 @@ def run_pipeline(
     meta = existing or BookMeta(
         slug=slug,
         title=title,
-        l1_lang=l1_lang,
-        l2_lang=l2_lang,
+        l1_lang=l1_lang or "",
+        l2_lang=l2_lang or "",
         l1_audio=str(l1_copy),
         l2_audio=str(l2_copy),
     )
     meta.l1_audio = str(l1_copy)
     meta.l2_audio = str(l2_copy)
 
-    l1_label = l1_lang.upper()
-    l2_label = l2_lang.upper()
+    l1_label = l1_lang.upper() if l1_lang else "L1"
+    l2_label = l2_lang.upper() if l2_lang else "L2"
 
     # Check prerequisites when starting from a later stage
     if from_stage is not None and from_stage > 1 and existing:
@@ -259,7 +276,7 @@ def run_pipeline(
             if s not in meta.stages_completed:
                 raise ValueError(
                     f"Stage {s} ({STAGE_NAMES[s]}) not completed. "
-                    f"Run 'bilbo {STAGE_COMMANDS[s]} {slug}' first."
+                    f"Run 'bilbo {STAGE_COMMANDS[s]} \"{title}\"' first."
                 )
 
     # Stage 1: Transcription
@@ -281,32 +298,34 @@ def run_pipeline(
             pp = log.parallel([l1_label, l2_label], "Transcribing", unit="s")
 
             def _transcribe_and_save(audio_path, lang, out_path, label):
-                segs = transcribe(
+                segs, detected = transcribe(
                     audio_path, lang, model=model,
                     on_progress=pp.callback(label),
                 )
                 _save_raw_segments(segs, out_path)
-                return segs
+                return segs, detected
 
             with ThreadPoolExecutor(max_workers=2) as pool:
                 f1 = pool.submit(_transcribe_and_save, l1_audio, l1_lang, raw_l1_path, l1_label)
                 f2 = pool.submit(_transcribe_and_save, l2_audio, l2_lang, raw_l2_path, l2_label)
-                raw_l1 = f1.result()
-                raw_l2 = f2.result()
+                raw_l1, det_l1 = f1.result()
+                raw_l2, det_l2 = f2.result()
             pp.finish(f"{l1_label}: {len(raw_l1)} segments, {l2_label}: {len(raw_l2)} segments")
         elif need_l1:
             p = log.progress(f"Transcribing {l1_label}", unit="s")
-            raw_l1 = transcribe(
+            raw_l1, det_l1 = transcribe(
                 l1_audio, l1_lang, model=model,
                 on_progress=p.update,
             )
             _save_raw_segments(raw_l1, raw_l1_path)
             p.finish(f"{len(raw_l1)} segments")
             raw_l2 = _load_raw_segments(raw_l2_path)
+            det_l2 = l2_lang
         else:
             raw_l1 = _load_raw_segments(raw_l1_path)
+            det_l1 = l1_lang
             p = log.progress(f"Transcribing {l2_label}", unit="s")
-            raw_l2 = transcribe(
+            raw_l2, det_l2 = transcribe(
                 l2_audio, l2_lang, model=model,
                 on_progress=p.update,
             )
@@ -314,7 +333,24 @@ def run_pipeline(
             p.finish(f"{len(raw_l2)} segments")
 
         del model
+
+        # Update langs from detection
+        if not l1_lang:
+            l1_lang = det_l1
+            log.info(f"Detected L1 language: {l1_lang}")
+        if not l2_lang:
+            l2_lang = det_l2
+            log.info(f"Detected L2 language: {l2_lang}")
+        l1_label = l1_lang.upper()
+        l2_label = l2_lang.upper()
+        meta.l1_lang = l1_lang
+        meta.l2_lang = l2_lang
     else:
+        if not l1_lang or not l2_lang:
+            raise ValueError(
+                "Cannot auto-detect languages from cached transcription. "
+                "Provide --l1/--l2 explicitly."
+            )
         log.skip("cached")
         raw_l1 = _load_raw_segments(raw_l1_path)
         raw_l2 = _load_raw_segments(raw_l2_path)
@@ -471,23 +507,23 @@ def run_pipeline(
 
 
 def run_export(
-    slug: str,
+    title: str,
     config: ExportConfig,
     library: Library | None = None,
 ) -> None:
     log = PipelineLog()
     lib = library or Library()
-    meta = lib.get(slug)
+    meta = lib.find_by_title(title)
     if meta is None:
-        raise ValueError(f"Book '{slug}' not found in library.")
+        raise ValueError(f"Book '{title}' not found in library.")
 
-    book_dir = lib.book_dir(slug)
+    book_dir = lib.book_dir(meta.slug)
     align_path = book_dir / "alignment.json"
 
     if 3 not in meta.stages_completed:
-        raise ValueError("Alignment not completed. Run 'bilbo align <slug>' first.")
+        raise ValueError(f"Alignment not completed. Run 'bilbo align \"{title}\"' first.")
     if not align_path.exists():
-        raise ValueError("Alignment file missing. Run 'bilbo align <slug>' first.")
+        raise ValueError(f"Alignment file missing. Run 'bilbo align \"{title}\"' first.")
 
     alignment = Alignment.load(align_path)
     if not alignment.problematic_regions:
