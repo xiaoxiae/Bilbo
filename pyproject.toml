@@ -46,6 +46,7 @@ packages = ["src/bilbo"]
 Homepage = "https://github.com/xiaoxiae/Bilbo"
 Repository = "https://github.com/xiaoxiae/Bilbo"
 Issues = "https://github.com/xiaoxiae/Bilbo/issues"
+Changelog = "https://github.com/xiaoxiae/Bilbo/blob/main/CHANGELOG.md"
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
