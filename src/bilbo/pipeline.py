@@ -40,11 +40,13 @@ def find_problematic_regions(
     scores = [p.score for p in pairs]
     n = len(scores)
     half = window // 2
+    import numpy as np
+    cumsum = np.concatenate(([0.0], np.cumsum(scores)))
     smoothed = []
     for i in range(n):
         lo = max(0, i - half)
         hi = min(n, i + half + 1)
-        smoothed.append(sum(scores[lo:hi]) / (hi - lo))
+        smoothed.append(float((cumsum[hi] - cumsum[lo]) / (hi - lo)))
 
     regions: list[tuple[int, int]] = []
     start: int | None = None

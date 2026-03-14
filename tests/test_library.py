@@ -74,6 +74,38 @@ def test_rename_not_found(tmp_library):
     assert tmp_library.rename("nonexistent", "Whatever") is None
 
 
+def test_rename_slug_in_parent_path(tmp_path):
+    """Rename should not corrupt paths when slug appears in parent directories."""
+    # Create library where the root path contains the slug as a substring
+    lib_root = tmp_path / "test-book" / "library"
+    lib = Library(root=lib_root)
+    lib.init()
+
+    book_dir = lib.book_dir("test-book")
+    book_dir.mkdir(parents=True, exist_ok=True)
+    (book_dir / "exports").mkdir(exist_ok=True)
+    input_dir = book_dir / "input"
+    input_dir.mkdir(exist_ok=True)
+
+    meta = BookMeta(
+        slug="test-book",
+        title="Test Book",
+        l1_lang="en",
+        l2_lang="de",
+        l1_audio=str(input_dir / "l1.mp3"),
+        l2_audio=str(input_dir / "l2.mp3"),
+    )
+    lib.add_or_update(meta)
+
+    result = lib.rename("Test Book", "New Title")
+    assert result is not None
+    # The parent "test-book" directory in the path should NOT be renamed
+    new_dir = lib.book_dir("new-title")
+    assert "test-book" in str(new_dir.parent)  # parent still has "test-book"
+    assert result.l1_audio.endswith("new-title/input/l1.mp3")
+    assert result.l2_audio.endswith("new-title/input/l2.mp3")
+
+
 def test_model_serialization(tmp_path):
     from bilbo.models import SegmentedText, Segment, Alignment, AlignmentPair
 

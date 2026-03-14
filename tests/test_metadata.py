@@ -1,6 +1,7 @@
 from bilbo.metadata import (
     SourceChapter,
     SourceMetadata,
+    _assign_chapters,
     map_chapters_to_output,
     save_source_metadata,
     load_source_metadata,
@@ -179,3 +180,40 @@ def test_source_metadata_from_dict_defaults():
     assert meta.artist is None
     assert meta.chapters == []
     assert meta.has_cover is False
+
+
+def test_assign_chapters_midpoints_inside():
+    """Midpoints inside chapters get correct assignment."""
+    chapters = [
+        SourceChapter("Ch1", 0.0, 10.0),
+        SourceChapter("Ch2", 10.0, 20.0),
+        SourceChapter("Ch3", 20.0, 30.0),
+    ]
+    midpoints = [5.0, 15.0, 25.0]
+    result = _assign_chapters(midpoints, chapters)
+    assert result == [0, 1, 2]
+
+
+def test_assign_chapters_at_boundaries():
+    """Midpoints exactly at chapter boundaries."""
+    chapters = [
+        SourceChapter("Ch1", 0.0, 10.0),
+        SourceChapter("Ch2", 10.0, 20.0),
+    ]
+    # 10.0 is both Ch1 end and Ch2 start — should match Ch1 first (ch.start <= mid <= ch.end)
+    midpoints = [0.0, 10.0, 20.0]
+    result = _assign_chapters(midpoints, chapters)
+    assert result[0] == 0  # at start of Ch1
+    assert result[1] == 0  # at boundary, matches Ch1 (start <= 10.0 <= end)
+    assert result[2] == 1  # at end of Ch2
+
+
+def test_assign_chapters_beyond_last():
+    """Midpoint beyond last chapter should be assigned to last chapter."""
+    chapters = [
+        SourceChapter("Ch1", 0.0, 10.0),
+        SourceChapter("Ch2", 10.0, 20.0),
+    ]
+    midpoints = [25.0]
+    result = _assign_chapters(midpoints, chapters)
+    assert result == [1]

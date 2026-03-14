@@ -53,7 +53,7 @@ To process an entire book from start to finish, run
 bilbo process data/en-5min.m4a data/de-5min.m4a --title "My Book"
 ```
 
-which runs the full pipeline (transcribe, segment, align, export) and stores results in `~/.bilbo/books/<title>/`.
+which runs the full pipeline (transcribe, segment, align, export) and stores results in `~/.bilbo/books/<slug>/`.
 
 ```output
 ── Stage 0: Input ────────────────────────────────

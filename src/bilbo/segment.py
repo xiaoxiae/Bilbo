@@ -135,17 +135,16 @@ def refine_timestamps(
     extended, total, avg_ms.
     """
     wav_path = _decode_to_wav(audio_path)
+    wav_file = sf.SoundFile(str(wav_path), mode="r")
     try:
-        info = sf.info(str(wav_path))
-        sr = info.samplerate
-        total_frames = info.frames
+        sr = wav_file.samplerate
+        total_frames = wav_file.frames
 
         win_samples = int(sr * win_ms / 1000)
         max_extend_samples = int(sr * max_extend_ms / 1000)
 
         extended_count = 0
         extensions_ms: list[float] = []
-
         for seg in segmented.sentences:
             end_frame = int(seg.end * sr)
             scan_end = min(total_frames, end_frame + max_extend_samples)
@@ -154,10 +153,8 @@ def refine_timestamps(
                 continue
 
             # Read the region we need to scan
-            data, _ = sf.read(
-                str(wav_path), start=end_frame,
-                stop=scan_end, dtype="float32",
-            )
+            wav_file.seek(end_frame)
+            data = wav_file.read(scan_end - end_frame, dtype="float32")
 
             # Scan forward in windows
             found_silence = False
@@ -193,6 +190,7 @@ def refine_timestamps(
                 log.info(f"Refined timestamps: 0/{total} segments extended")
 
     finally:
+        wav_file.close()
         wav_path.unlink(missing_ok=True)
 
     return segmented, stats

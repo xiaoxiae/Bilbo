@@ -51,8 +51,6 @@ def preprocess_audio(
     If *on_progress* is provided, it is called with (current_secs, total_secs | None)
     on each ffmpeg progress update.
     """
-    import os
-
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav")
     os.close(tmp_fd)
 

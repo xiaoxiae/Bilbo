@@ -101,8 +101,18 @@ class Library:
         new_dir = self.book_dir(new_slug)
         if old_dir.exists():
             old_dir.rename(new_dir)
-        meta.l1_audio = meta.l1_audio.replace(old_slug, new_slug)
-        meta.l2_audio = meta.l2_audio.replace(old_slug, new_slug)
+        # Safely remap only the book directory component, not arbitrary
+        # occurrences of the slug in parent directories
+        old_l1 = Path(meta.l1_audio)
+        old_l2 = Path(meta.l2_audio)
+        try:
+            meta.l1_audio = str(new_dir / old_l1.relative_to(old_dir))
+        except ValueError:
+            meta.l1_audio = meta.l1_audio.replace(old_slug, new_slug)
+        try:
+            meta.l2_audio = str(new_dir / old_l2.relative_to(old_dir))
+        except ValueError:
+            meta.l2_audio = meta.l2_audio.replace(old_slug, new_slug)
         meta.title = new_title
         meta.slug = new_slug
         index = self._read_index()

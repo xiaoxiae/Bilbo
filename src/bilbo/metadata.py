@@ -130,9 +130,13 @@ def merge_covers(l1_cover: Path, l2_cover: Path, output: Path) -> None:
 
     arr1 = np.array(img1)
     arr2 = np.array(img2)
-    for y in range(target_h):
-        cut_x = int(target_w * (1 - y / target_h))
-        arr2[y, :cut_x] = arr1[y, :cut_x]
+    ys = np.arange(target_h)
+    cut_xs = (target_w * (1 - ys / target_h)).astype(int)
+    xs = np.arange(target_w)
+    mask = xs[np.newaxis, :] < cut_xs[:, np.newaxis]
+    if arr2.ndim == 3:
+        mask = mask[:, :, np.newaxis]
+    arr2 = np.where(mask, arr1, arr2)
     Image.fromarray(arr2).save(str(output), "JPEG", quality=COVER_JPEG_QUALITY)
 
 
@@ -152,6 +156,17 @@ def _assign_chapters(
                 continue
             assigned = ci
         result.append(assigned)
+    return result
+
+
+def _dedup_ordered(items: list[str]) -> list[str]:
+    """Deduplicate a list while preserving order."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
     return result
 
 
@@ -194,28 +209,27 @@ def map_chapters_to_output(
     pair_l1_ch = _assign_chapters(l1_midpoints, l1_chapters)
     pair_l2_ch = _assign_chapters(l2_midpoints, l2_chapters) if l2_chapters else []
 
-    # Group pairs by L1 chapter and build markers
+    # Group pairs by L1 chapter and build markers + chapter_pairs for LLM
     markers: list[ChapterMarker] = []
+    chapter_pairs: list[tuple[str, list[str]]] = []
     current_ch = -1
     ch_start_ms = 0
     ch_end_ms = 0
     l2_titles_in_group: list[str] = []
 
+    def _finish_chapter() -> None:
+        nonlocal ch_end_ms
+        l1_title = l1_chapters[current_ch].title
+        unique_l2 = _dedup_ordered(l2_titles_in_group)
+        l2_part = ", ".join(unique_l2)
+        title = f"{l1_title} / {l2_part}" if l2_part else l1_title
+        markers.append(ChapterMarker(title=title, start_ms=ch_start_ms, end_ms=ch_end_ms))
+        chapter_pairs.append((l1_title, unique_l2))
+
     for pi, ch_idx in enumerate(pair_l1_ch):
         if ch_idx != current_ch:
-            # Finish previous chapter
             if current_ch >= 0:
-                l1_title = l1_chapters[current_ch].title
-                # Deduplicate L2 titles while preserving order
-                seen: set[str] = set()
-                unique_l2: list[str] = []
-                for t in l2_titles_in_group:
-                    if t not in seen:
-                        seen.add(t)
-                        unique_l2.append(t)
-                l2_part = ", ".join(unique_l2)
-                title = f"{l1_title} / {l2_part}" if l2_part else l1_title
-                markers.append(ChapterMarker(title=title, start_ms=ch_start_ms, end_ms=ch_end_ms))
+                _finish_chapter()
 
             current_ch = ch_idx
             ch_start_ms = pair_offsets_ms[pi][0]
@@ -227,52 +241,12 @@ def map_chapters_to_output(
 
     # Finish last chapter
     if current_ch >= 0:
-        l1_title = l1_chapters[current_ch].title
-        seen = set()
-        unique_l2 = []
-        for t in l2_titles_in_group:
-            if t not in seen:
-                seen.add(t)
-                unique_l2.append(t)
-        l2_part = ", ".join(unique_l2)
-        title = f"{l1_title} / {l2_part}" if l2_part else l1_title
-        markers.append(ChapterMarker(title=title, start_ms=ch_start_ms, end_ms=ch_end_ms))
+        _finish_chapter()
 
     # Optionally refine chapter titles via LLM
     if llm_merge and markers and l2_chapters:
         from .llm import is_available, merge_chapter_titles
         if is_available():
-            # Rebuild (l1_title, [l2_titles]) pairs for LLM merging
-            chapter_pairs: list[tuple[str, list[str]]] = []
-            marker_idx = 0
-            current_ch = -1
-            l2_titles_group: list[str] = []
-            l1_title_for_ch = ""
-            for pi, ch_idx in enumerate(pair_l1_ch):
-                if ch_idx != current_ch:
-                    if current_ch >= 0:
-                        seen_set: set[str] = set()
-                        deduped: list[str] = []
-                        for t in l2_titles_group:
-                            if t not in seen_set:
-                                seen_set.add(t)
-                                deduped.append(t)
-                        chapter_pairs.append((l1_title_for_ch, deduped))
-                        marker_idx += 1
-                    current_ch = ch_idx
-                    l1_title_for_ch = l1_chapters[ch_idx].title
-                    l2_titles_group = []
-                if pair_l2_ch and pi < len(pair_l2_ch):
-                    l2_titles_group.append(l2_chapters[pair_l2_ch[pi]].title)
-            if current_ch >= 0:
-                seen_set = set()
-                deduped = []
-                for t in l2_titles_group:
-                    if t not in seen_set:
-                        seen_set.add(t)
-                        deduped.append(t)
-                chapter_pairs.append((l1_title_for_ch, deduped))
-
             merged_titles = merge_chapter_titles(chapter_pairs)
             for i, title in enumerate(merged_titles):
                 if i < len(markers):
