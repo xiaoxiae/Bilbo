@@ -83,8 +83,8 @@ def test_rename_slug_in_parent_path(tmp_path):
 
     book_dir = lib.book_dir("test-book")
     book_dir.mkdir(parents=True, exist_ok=True)
-    (book_dir / "exports").mkdir(exist_ok=True)
-    input_dir = book_dir / "input"
+    (book_dir / "4-export").mkdir(exist_ok=True)
+    input_dir = book_dir / "0-input"
     input_dir.mkdir(exist_ok=True)
 
     meta = BookMeta(
@@ -102,8 +102,53 @@ def test_rename_slug_in_parent_path(tmp_path):
     # The parent "test-book" directory in the path should NOT be renamed
     new_dir = lib.book_dir("new-title")
     assert "test-book" in str(new_dir.parent)  # parent still has "test-book"
-    assert result.l1_audio.endswith("new-title/input/l1.mp3")
-    assert result.l2_audio.endswith("new-title/input/l2.mp3")
+    assert result.l1_audio.endswith("new-title/0-input/l1.mp3")
+    assert result.l2_audio.endswith("new-title/0-input/l2.mp3")
+
+
+def _make_meta(title, slug, l1="en", l2="de"):
+    return BookMeta(
+        slug=slug, title=title, l1_lang=l1, l2_lang=l2,
+        l1_audio="/tmp/l1.mp3", l2_audio="/tmp/l2.mp3",
+    )
+
+
+def test_find_by_id(tmp_library):
+    tmp_library.add_or_update(_make_meta("Alpha", "alpha"))
+    tmp_library.add_or_update(_make_meta("Beta", "beta"))
+    tmp_library.add_or_update(_make_meta("Gamma", "gamma"))
+    books = tmp_library.list_books()
+    assert tmp_library.find("1").title == books[0].title
+    assert tmp_library.find("2").title == books[1].title
+    assert tmp_library.find("3").title == books[2].title
+
+
+def test_find_by_id_out_of_range(tmp_library):
+    tmp_library.add_or_update(_make_meta("Alpha", "alpha"))
+    assert tmp_library.find("0") is None
+    assert tmp_library.find("2") is None
+
+
+def test_find_by_title_via_find(tmp_library, sample_meta):
+    tmp_library.add_or_update(sample_meta)
+    found = tmp_library.find("Test Book")
+    assert found is not None
+    assert found.slug == "test-book"
+
+
+def test_find_not_found(tmp_library):
+    assert tmp_library.find("nonexistent") is None
+    assert tmp_library.find("99") is None
+
+
+def test_rename_by_id(tmp_library):
+    tmp_library.add_or_update(_make_meta("Alpha", "alpha"))
+    tmp_library.add_or_update(_make_meta("Beta", "beta"))
+    result = tmp_library.rename("1", "New Alpha")
+    assert result is not None
+    assert result.title == "New Alpha"
+    assert tmp_library.find_by_title("Alpha") is None
+    assert tmp_library.find_by_title("New Alpha") is not None
 
 
 def test_model_serialization(tmp_path):

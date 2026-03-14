@@ -39,14 +39,20 @@ class Library:
         tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2))
         tmp.rename(self.index_path)
 
+    def _load_meta(self, key: str, data: dict) -> BookMeta:
+        """Load a BookMeta from index, ensuring slug matches the index key."""
+        meta = BookMeta.from_dict(data)
+        meta.slug = key
+        return meta
+
     def list_books(self) -> list[BookMeta]:
         index = self._read_index()
-        return [BookMeta.from_dict(v) for v in index.values()]
+        return [self._load_meta(k, v) for k, v in index.items()]
 
     def get(self, slug: str) -> BookMeta | None:
         index = self._read_index()
         if slug in index:
-            return BookMeta.from_dict(index[slug])
+            return self._load_meta(slug, index[slug])
         return None
 
     def book_dir(self, slug: str) -> Path:
@@ -56,7 +62,6 @@ class Library:
         self.init()
         d = self.book_dir(meta.slug)
         d.mkdir(parents=True, exist_ok=True)
-        (d / "exports").mkdir(exist_ok=True)
         index = self._read_index()
         index[meta.slug] = meta.to_dict()
         self._write_index(index)
@@ -84,15 +89,25 @@ class Library:
 
     def find_by_title(self, title: str) -> BookMeta | None:
         index = self._read_index()
-        for v in index.values():
-            meta = BookMeta.from_dict(v)
+        for k, v in index.items():
+            meta = self._load_meta(k, v)
             if meta.title == title:
                 return meta
         return None
 
+    def find(self, identifier: str) -> BookMeta | None:
+        """Find a book by numeric ID (1-based) or title string."""
+        if identifier.isdigit():
+            idx = int(identifier)
+            books = self.list_books()
+            if 1 <= idx <= len(books):
+                return books[idx - 1]
+            return None
+        return self.find_by_title(identifier)
+
     def rename(self, old_title: str, new_title: str) -> BookMeta | None:
         """Rename a book: update title, slug, and move data directory."""
-        meta = self.find_by_title(old_title)
+        meta = self.find(old_title)
         if meta is None:
             return None
         old_slug = meta.slug

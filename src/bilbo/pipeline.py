@@ -26,6 +26,7 @@ from .models import (
 
 
 STAGE_NAMES = {1: "transcription", 2: "segmentation", 3: "alignment", 4: "export"}
+STAGE_DIRS = {0: "0-input", 1: "1-transcribe", 2: "2-segment", 3: "3-align", 4: "4-export"}
 
 
 def find_problematic_regions(
@@ -234,12 +235,11 @@ def run_pipeline(
         slug = lib.make_slug(title)
     book_dir = lib.book_dir(slug)
     book_dir.mkdir(parents=True, exist_ok=True)
-    (book_dir / "exports").mkdir(exist_ok=True)
 
     # Copy input audio into the book directory so we don't depend on
     # the original files staying in place.
     log.stage(0, "Input")
-    input_dir = book_dir / "input"
+    input_dir = book_dir / STAGE_DIRS[0]
     input_dir.mkdir(exist_ok=True)
     l1_copy = input_dir / f"l1{l1_audio.suffix}"
     l2_copy = input_dir / f"l2{l2_audio.suffix}"
@@ -282,8 +282,10 @@ def run_pipeline(
 
     # Stage 1: Transcription
     log.stage(1, "Transcription")
-    raw_l1_path = book_dir / "raw_segments_l1.json"
-    raw_l2_path = book_dir / "raw_segments_l2.json"
+    transcribe_dir = book_dir / STAGE_DIRS[1]
+    transcribe_dir.mkdir(exist_ok=True)
+    raw_l1_path = transcribe_dir / "raw_segments_l1.json"
+    raw_l2_path = transcribe_dir / "raw_segments_l2.json"
 
     need_l1 = force[1] or not raw_l1_path.exists()
     need_l2 = force[1] or not raw_l2_path.exists()
@@ -367,8 +369,10 @@ def run_pipeline(
 
     # Stage 2: Segmentation
     log.stage(2, "Segmentation")
-    seg_l1_path = book_dir / "segments_l1.json"
-    seg_l2_path = book_dir / "segments_l2.json"
+    segment_dir = book_dir / STAGE_DIRS[2]
+    segment_dir.mkdir(exist_ok=True)
+    seg_l1_path = segment_dir / "segments_l1.json"
+    seg_l2_path = segment_dir / "segments_l2.json"
 
     need_seg_l1 = force[2] or not seg_l1_path.exists()
     need_seg_l2 = force[2] or not seg_l2_path.exists()
@@ -427,11 +431,13 @@ def run_pipeline(
 
     # Stage 3: Alignment
     log.stage(3, "Alignment")
-    align_path = book_dir / "alignment.json"
+    align_dir = book_dir / STAGE_DIRS[3]
+    align_dir.mkdir(exist_ok=True)
+    align_path = align_dir / "alignment.json"
 
     if force[3] or not align_path.exists():
         from .align import align_texts
-        alignment = align_texts(seg_l1, seg_l2, device=device, log=log, book_dir=book_dir)
+        alignment = align_texts(seg_l1, seg_l2, device=device, log=log, book_dir=align_dir)
         alignment.problematic_regions = find_problematic_regions(alignment.pairs)
         alignment.save(align_path)
     else:
@@ -469,11 +475,13 @@ def run_pipeline(
         return meta
 
     config = export_config or ExportConfig()
+    export_dir = book_dir / STAGE_DIRS[4]
+    export_dir.mkdir(exist_ok=True)
     output_name = f"interleaved.{config.format}"
-    output_path = book_dir / "exports" / output_name
+    output_path = export_dir / output_name
 
     # Always generate text alignment alongside audio export
-    txt_path = book_dir / "exports" / "interleaved.txt"
+    txt_path = export_dir / "interleaved.txt"
     _export_alignment_text(alignment, txt_path)
     if "interleaved.txt" not in meta.exports:
         meta.exports.append("interleaved.txt")

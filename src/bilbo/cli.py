@@ -180,7 +180,19 @@ def _make_export_config(
 
 
 
-@click.group()
+COMMAND_ALIASES = {
+    "remove": "delete",
+    "run": "process",
+}
+
+
+class AliasedGroup(click.Group):
+    def get_command(self, ctx, cmd_name):
+        cmd_name = COMMAND_ALIASES.get(cmd_name, cmd_name)
+        return super().get_command(ctx, cmd_name)
+
+
+@click.group(cls=AliasedGroup)
 @click.version_option(__version__, "-v", "--version")
 def cli():
     """Bilingual audiobook interleaver."""
@@ -249,8 +261,9 @@ def process(
     # Re-run mode: if --title given and book exists, load audio from stored metadata
     if title is not None:
         lib = Library()
-        existing = lib.find_by_title(title)
+        existing = lib.find(title)
         if existing is not None:
+            title = existing.title
             if l1_audio is None:
                 l1_audio = Path(existing.l1_audio)
             if l2_audio is None:
@@ -294,11 +307,11 @@ def list_cmd():
     if not books:
         click.echo("Library is empty.")
         return
-    for book in books:
+    for i, book in enumerate(books, 1):
         stages = ",".join(str(s) for s in sorted(book.stages_completed))
         exports = ", ".join(book.exports) if book.exports else "none"
         click.echo(
-            f"  {book.title} [{book.l1_lang}/{book.l2_lang}] stages=[{stages}] exports=[{exports}]"
+            f"  {i}. {book.title} [{book.l1_lang}/{book.l2_lang}] stages=[{stages}] exports=[{exports}]"
         )
 
 
@@ -307,7 +320,7 @@ def list_cmd():
 def info(title):
     """Show details about a book."""
     lib = Library()
-    meta = lib.find_by_title(title)
+    meta = lib.find(title)
     if meta is None:
         raise click.ClickException(f"Book '{title}' not found.")
     click.echo(f"Title:    {meta.title}")
@@ -337,8 +350,10 @@ def rename(title, new_title):
 def delete(title):
     """Delete a book from the library."""
     lib = Library()
-    meta = lib.find_by_title(title)
+    meta = lib.find(title)
     if meta is None:
         raise click.ClickException(f"Book '{title}' not found.")
     lib.delete(meta.slug)
     click.echo(f"Deleted '{title}'.")
+
+
