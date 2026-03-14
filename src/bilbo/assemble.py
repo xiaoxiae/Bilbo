@@ -5,16 +5,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import soundfile as sf
 
 from .audio import (
     AudioExporter,
+    AudioReader,
     apply_fade,
     generate_silence,
     generate_tone,
     post_process_metadata,
     preprocess_audio,
-    slice_audio,
 )
 from .models import Alignment, AlignmentPair, ChapterMarker, ExportConfig
 
@@ -69,20 +68,18 @@ def _build_text_meta(
 
 def _extract_chunk(
     pair: AlignmentPair,
-    audio_path: Path,
-    sr: int,
+    reader: AudioReader,
     lang: str,
     config: ExportConfig,
 ) -> np.ndarray:
     segs = pair.l1 if lang == "l1" else pair.l2
 
     if not segs:
-        info = sf.info(str(audio_path))
-        return np.zeros((0, info.channels), dtype=np.float32)
+        return np.zeros((0, reader.channels), dtype=np.float32)
 
     start = min(s.start for s in segs)
     end = max(s.end for s in segs)
-    return slice_audio(audio_path, sr, start, end, config.padding_ms + config.fade_ms)
+    return reader.slice(start, end, config.padding_ms + config.fade_ms)
 
 
 def assemble(
@@ -116,15 +113,15 @@ def assemble(
         l1_wav = f1.result()
         l2_wav = f2.result()
 
+    l1_reader = AudioReader(l1_wav)
+    l2_reader = AudioReader(l2_wav)
     try:
-        l1_info = sf.info(str(l1_wav))
-        sr = l1_info.samplerate
-        channels = l1_info.channels
+        sr = l1_reader.sr
+        channels = l1_reader.channels
 
         if pp:
-            l2_info = sf.info(str(l2_wav))
-            l1_dur = l1_info.frames / sr
-            l2_dur = l2_info.frames / sr
+            l1_dur = l1_reader.frames / sr
+            l2_dur = l2_reader.frames / sr
             pp.finish(f"Preprocessed ({l1_l}: {l1_dur:.0f}s, {l2_l}: {l2_dur:.0f}s)")
 
         pairs = alignment.pairs
@@ -134,8 +131,8 @@ def assemble(
         inter_gap = generate_silence(sr, max(0, config.inter_gap_ms - 2 * config.fade_ms), channels)
 
         first_lang, second_lang = ("l1", "l2")
-        first_wav = l1_wav
-        second_wav = l2_wav
+        first_reader = l1_reader
+        second_reader = l2_reader
 
         # Collect LLM-merged metadata (ran in parallel with preprocessing)
         text_meta: dict[str, str] | None = None
@@ -174,8 +171,8 @@ def assemble(
                     exporter.write(start_tone)
                     exporter.write(tone_gap)
 
-                chunk1 = apply_fade(_extract_chunk(pair, first_wav, sr, first_lang, config), sr, config.fade_ms)
-                chunk2 = apply_fade(_extract_chunk(pair, second_wav, sr, second_lang, config), sr, config.fade_ms)
+                chunk1 = apply_fade(_extract_chunk(pair, first_reader, first_lang, config), sr, config.fade_ms)
+                chunk2 = apply_fade(_extract_chunk(pair, second_reader, second_lang, config), sr, config.fade_ms)
 
                 if len(chunk1) > 0:
                     exporter.write(chunk1)
@@ -232,5 +229,7 @@ def assemble(
             )
 
     finally:
+        l1_reader.close()
+        l2_reader.close()
         l1_wav.unlink(missing_ok=True)
         l2_wav.unlink(missing_ok=True)

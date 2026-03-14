@@ -99,6 +99,35 @@ def preprocess_audio(
     return Path(tmp_path)
 
 
+class AudioReader:
+    """Keeps a WAV file open for efficient repeated random-access reads."""
+
+    def __init__(self, path: Path) -> None:
+        self._sf = sf.SoundFile(str(path))
+        self.sr: int = self._sf.samplerate
+        self.channels: int = self._sf.channels
+        self.frames: int = self._sf.frames
+
+    def slice(self, start: float, end: float, padding_ms: float = 75) -> np.ndarray:
+        """Read a time-range slice, same semantics as slice_audio()."""
+        pad_s = padding_ms / 1000.0
+        frame_s = max(0, int((start - pad_s) * self.sr))
+        frame_e = min(self.frames, int((end + pad_s) * self.sr))
+        if frame_e <= frame_s:
+            return np.zeros((0, self.channels), dtype=np.float32)
+        self._sf.seek(frame_s)
+        return self._sf.read(frame_e - frame_s, dtype="float32", always_2d=True)
+
+    def close(self) -> None:
+        self._sf.close()
+
+    def __enter__(self) -> AudioReader:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
 def slice_audio(
     path: Path,
     sr: int,

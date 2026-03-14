@@ -15,6 +15,7 @@ def test_export_config_defaults():
 def test_extract_chunk_with_audio(tmp_path):
     """_extract_chunk reads the correct region from a WAV file."""
     from bilbo.assemble import _extract_chunk
+    from bilbo.audio import AudioReader
 
     sr = 16000
     channels = 1
@@ -31,7 +32,8 @@ def test_extract_chunk_with_audio(tmp_path):
         l2=[Segment(0.0, 0.5, "Hallo.", words=[Word(0.0, 0.5, "Hallo.")])],
     )
     config = ExportConfig(padding_ms=0, fade_ms=0)
-    chunk = _extract_chunk(pair, wav_path, sr, "l1", config)
+    with AudioReader(wav_path) as reader:
+        chunk = _extract_chunk(pair, reader, "l1", config)
     # Should contain approximately 0.5s of audio
     assert len(chunk) > 0
     assert chunk.shape[1] == channels
@@ -40,6 +42,7 @@ def test_extract_chunk_with_audio(tmp_path):
 def test_extract_chunk_empty_segments(tmp_path):
     """_extract_chunk with empty segments returns empty array."""
     from bilbo.assemble import _extract_chunk
+    from bilbo.audio import AudioReader
 
     sr = 16000
     data = np.zeros((sr, 1), dtype=np.float32)
@@ -48,7 +51,8 @@ def test_extract_chunk_empty_segments(tmp_path):
 
     pair = AlignmentPair(l1=[], l2=[Segment(0.0, 0.5, "A.", words=[])])
     config = ExportConfig()
-    chunk = _extract_chunk(pair, wav_path, sr, "l1", config)
+    with AudioReader(wav_path) as reader:
+        chunk = _extract_chunk(pair, reader, "l1", config)
     assert len(chunk) == 0
 
 
