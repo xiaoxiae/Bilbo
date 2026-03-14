@@ -587,13 +587,34 @@ def align_texts(
     tgt_norm = _normalize(tgt_vecs[0].copy())
 
     pairs = []
+    covered_l1: set[int] = set()
+    covered_l2: set[int] = set()
     for src_idxs, tgt_idxs in raw_pairs:
         if not src_idxs or not tgt_idxs:
             continue  # skip insertion/deletion pairs
+        covered_l1.update(src_idxs)
+        covered_l2.update(tgt_idxs)
         l1_segs = [l1.sentences[i] for i in src_idxs]
         l2_segs = [l2.sentences[i] for i in tgt_idxs]
         block = src_norm[src_idxs] @ tgt_norm[tgt_idxs].T
         score = float(block.mean())
         pairs.append(AlignmentPair(l1=l1_segs, l2=l2_segs, score=score))
+
+    # Log skipped sentences (insertions/deletions with no alignment match)
+    if log:
+        skipped_l1 = sorted(set(range(len(l1_texts))) - covered_l1)
+        skipped_l2 = sorted(set(range(len(l2_texts))) - covered_l2)
+        if skipped_l1:
+            log.warn(f"{len(skipped_l1)} L1 sentences skipped (no alignment match)")
+            for i in skipped_l1[:5]:
+                log.detail(f"L1[{i}]: {l1_texts[i][:80]}")
+            if len(skipped_l1) > 5:
+                log.detail(f"... and {len(skipped_l1) - 5} more")
+        if skipped_l2:
+            log.warn(f"{len(skipped_l2)} L2 sentences skipped (no alignment match)")
+            for i in skipped_l2[:5]:
+                log.detail(f"L2[{i}]: {l2_texts[i][:80]}")
+            if len(skipped_l2) > 5:
+                log.detail(f"... and {len(skipped_l2) - 5} more")
 
     return Alignment(pairs=pairs)
