@@ -14,6 +14,13 @@ def test_cli_help():
     assert "Bilingual audiobook interleaver" in result.output
 
 
+def test_cli_help_subcommand():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["help"])
+    assert result.exit_code == 0
+    assert "Bilingual audiobook interleaver" in result.output
+
+
 def test_cli_list_empty():
     runner = CliRunner()
     result = runner.invoke(cli, ["list"])
@@ -29,6 +36,13 @@ def test_cli_info_not_found():
 def test_cli_version():
     runner = CliRunner()
     result = runner.invoke(cli, ["--version"])
+    assert result.exit_code == 0
+    assert "version" in result.output
+
+
+def test_cli_version_short():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["-v"])
     assert result.exit_code == 0
     assert "version" in result.output
 

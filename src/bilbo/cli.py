@@ -143,7 +143,8 @@ def export_options(f):
         help="Fade duration applied outside speech (ms)",
     )
     @click.option(
-        "--format", "fmt", type=click.Choice(["m4b", "mp3", "txt"]), default="m4b"
+        "--format", "fmt", type=click.Choice(["m4b", "mp3"]), default="m4b",
+        help="Output audio format"
     )
     @click.option(
         "--no-warn-noise",
@@ -178,16 +179,9 @@ def _make_export_config(
     )
 
 
-def _get_book_meta(title: str):
-    lib = Library()
-    meta = lib.find_by_title(title)
-    if meta is None:
-        raise click.ClickException(f"Book '{title}' not found.")
-    return meta
-
 
 @click.group()
-@click.version_option(version=__version__)
+@click.version_option(__version__, "-v", "--version")
 def cli():
     """Bilingual audiobook interleaver."""
     for tool in ("ffmpeg", "ffprobe"):
@@ -198,9 +192,16 @@ def cli():
             )
 
 
+@cli.command(hidden=True)
+@click.pass_context
+def help(ctx):
+    """Show this help message."""
+    click.echo(ctx.parent.get_help())
+
+
 @cli.command()
-@click.argument("l1_audio", type=click.Path(exists=True, path_type=Path))
-@click.argument("l2_audio", type=click.Path(exists=True, path_type=Path))
+@click.argument("l1_audio", type=click.Path(exists=True, path_type=Path), required=False, default=None)
+@click.argument("l2_audio", type=click.Path(exists=True, path_type=Path), required=False, default=None)
 @click.option(
     "--l1", "l1_lang",
     default=None,
@@ -218,6 +219,10 @@ def cli():
     default=None,
     help="Book title (auto-generated from filenames if omitted)",
 )
+@click.option("--from", "from_stage", type=click.IntRange(1, 4), default=None,
+              help="Start from this stage (1=transcribe, 2=segment, 3=align, 4=export)")
+@click.option("--to", "to_stage", type=click.IntRange(1, 4), default=None,
+              help="Stop after this stage (1=transcribe, 2=segment, 3=align, 4=export)")
 @click.option("--whisper-model", default="large-v3-turbo", help="Whisper model size")
 @click.option("--device", default="auto", help="Compute device (cpu/cuda/auto)")
 @export_options
@@ -227,6 +232,8 @@ def process(
     l1_lang,
     l2_lang,
     title,
+    from_stage,
+    to_stage,
     whisper_model,
     device,
     intra_gap,
@@ -238,6 +245,28 @@ def process(
 ):
     """Run the full processing pipeline."""
     from .pipeline import run_pipeline
+
+    # Re-run mode: if --title given and book exists, load audio from stored metadata
+    if title is not None:
+        lib = Library()
+        existing = lib.find_by_title(title)
+        if existing is not None:
+            if l1_audio is None:
+                l1_audio = Path(existing.l1_audio)
+            if l2_audio is None:
+                l2_audio = Path(existing.l2_audio)
+            if l1_lang is None and existing.l1_lang:
+                l1_lang = existing.l1_lang
+            if l2_lang is None and existing.l2_lang:
+                l2_lang = existing.l2_lang
+
+    if (l1_audio is None) != (l2_audio is None):
+        raise click.ClickException("Provide both audio paths or neither.")
+    if l1_audio is None:
+        raise click.ClickException(
+            "Missing audio paths. "
+            "Pass both L1 and L2 audio files, or --title of an existing book to re-run."
+        )
 
     config = _make_export_config(
         intra_gap, inter_gap, fade_ms, fmt, no_warn_noise, no_llm_merge
@@ -251,90 +280,10 @@ def process(
         model_size=whisper_model,
         device=device,
         export_config=config,
+        from_stage=from_stage,
+        to_stage=to_stage,
     )
     click.echo(f"\nBook '{meta.title}' saved.")
-
-
-@cli.command("export")
-@click.argument("title")
-@export_options
-def export_cmd(title, intra_gap, inter_gap, fade_ms, fmt, no_warn_noise, no_llm_merge):
-    """Export an interleaved audiobook from an already-processed book."""
-    from .pipeline import run_export
-
-    config = _make_export_config(
-        intra_gap, inter_gap, fade_ms, fmt, no_warn_noise, no_llm_merge
-    )
-    try:
-        run_export(title, config)
-    except ValueError as e:
-        raise click.ClickException(str(e))
-
-
-@cli.command("transcribe")
-@click.argument("title")
-@click.option("--whisper-model", default="large-v3-turbo", help="Whisper model size")
-@click.option("--device", default="auto", help="Compute device (cpu/cuda/auto)")
-def transcribe_cmd(title, whisper_model, device):
-    """Run transcription stage for a book."""
-    from .pipeline import run_pipeline
-
-    meta = _get_book_meta(title)
-    run_pipeline(
-        l1_audio=Path(meta.l1_audio),
-        l2_audio=Path(meta.l2_audio),
-        l1_lang=meta.l1_lang,
-        l2_lang=meta.l2_lang,
-        title=meta.title,
-        model_size=whisper_model,
-        device=device,
-        from_stage=1,
-        to_stage=1,
-    )
-
-
-@cli.command("segment")
-@click.argument("title")
-def segment_cmd(title):
-    """Run segmentation stage for a book."""
-    from .pipeline import run_pipeline
-
-    meta = _get_book_meta(title)
-    try:
-        run_pipeline(
-            l1_audio=Path(meta.l1_audio),
-            l2_audio=Path(meta.l2_audio),
-            l1_lang=meta.l1_lang,
-            l2_lang=meta.l2_lang,
-            title=meta.title,
-            from_stage=2,
-            to_stage=2,
-        )
-    except ValueError as e:
-        raise click.ClickException(str(e))
-
-
-@cli.command("align")
-@click.argument("title")
-@click.option("--device", default="auto", help="Compute device (cpu/cuda/auto)")
-def align_cmd(title, device):
-    """Run alignment stage for a book."""
-    from .pipeline import run_pipeline
-
-    meta = _get_book_meta(title)
-    try:
-        run_pipeline(
-            l1_audio=Path(meta.l1_audio),
-            l2_audio=Path(meta.l2_audio),
-            l1_lang=meta.l1_lang,
-            l2_lang=meta.l2_lang,
-            title=meta.title,
-            device=device,
-            from_stage=3,
-            to_stage=3,
-        )
-    except ValueError as e:
-        raise click.ClickException(str(e))
 
 
 @cli.command("list")

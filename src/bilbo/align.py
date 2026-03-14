@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -551,6 +552,7 @@ def align_texts(
     l2: SegmentedText,
     device: str = "cpu",
     log: PipelineLog | None = None,
+    book_dir: Path | None = None,
 ) -> Alignment:
     # Phase 1: Load model
     a = log.activity("Loading LaBSE model...", detail=f"({device})") if log else None
@@ -589,9 +591,23 @@ def align_texts(
     pairs = []
     covered_l1: set[int] = set()
     covered_l2: set[int] = set()
+    unmatched_l1_idxs: list[int] = []
+    unmatched_l2_idxs: list[int] = []
     for src_idxs, tgt_idxs in raw_pairs:
-        if not src_idxs or not tgt_idxs:
-            continue  # skip insertion/deletion pairs
+        if src_idxs and not tgt_idxs:
+            # L1 unmatched — keep with score=0.0 so it gets flagged as problematic
+            covered_l1.update(src_idxs)
+            unmatched_l1_idxs.extend(src_idxs)
+            l1_segs = [l1.sentences[i] for i in src_idxs]
+            pairs.append(AlignmentPair(l1=l1_segs, l2=[], score=0.0))
+            continue
+        if not src_idxs and tgt_idxs:
+            # L2 unmatched — exclude from output
+            covered_l2.update(tgt_idxs)
+            unmatched_l2_idxs.extend(tgt_idxs)
+            continue
+        if not src_idxs and not tgt_idxs:
+            continue
         covered_l1.update(src_idxs)
         covered_l2.update(tgt_idxs)
         l1_segs = [l1.sentences[i] for i in src_idxs]
@@ -600,21 +616,41 @@ def align_texts(
         score = float(block.mean())
         pairs.append(AlignmentPair(l1=l1_segs, l2=l2_segs, score=score))
 
-    # Log skipped sentences (insertions/deletions with no alignment match)
+    # Also track sentences not covered by any raw pair
+    uncovered_l1 = sorted(set(range(len(l1_texts))) - covered_l1)
+    uncovered_l2 = sorted(set(range(len(l2_texts))) - covered_l2)
+    unmatched_l1_idxs = sorted(set(unmatched_l1_idxs) | set(uncovered_l1))
+    unmatched_l2_idxs = sorted(set(unmatched_l2_idxs) | set(uncovered_l2))
+
+    # Log unmatched sentences
     if log:
-        skipped_l1 = sorted(set(range(len(l1_texts))) - covered_l1)
-        skipped_l2 = sorted(set(range(len(l2_texts))) - covered_l2)
-        if skipped_l1:
-            log.warn(f"{len(skipped_l1)} L1 sentences skipped (no alignment match)")
-            for i in skipped_l1[:5]:
+        if unmatched_l1_idxs:
+            log.warn(f"{len(unmatched_l1_idxs)} L1 sentences unmatched (kept)")
+            for i in unmatched_l1_idxs[:5]:
                 log.detail(f"L1[{i}]: {l1_texts[i][:80]}")
-            if len(skipped_l1) > 5:
-                log.detail(f"... and {len(skipped_l1) - 5} more")
-        if skipped_l2:
-            log.warn(f"{len(skipped_l2)} L2 sentences skipped (no alignment match)")
-            for i in skipped_l2[:5]:
+            if len(unmatched_l1_idxs) > 5:
+                log.detail(f"... and {len(unmatched_l1_idxs) - 5} more")
+        if unmatched_l2_idxs:
+            log.warn(f"{len(unmatched_l2_idxs)} L2 sentences excluded")
+            for i in unmatched_l2_idxs[:5]:
                 log.detail(f"L2[{i}]: {l2_texts[i][:80]}")
-            if len(skipped_l2) > 5:
-                log.detail(f"... and {len(skipped_l2) - 5} more")
+            if len(unmatched_l2_idxs) > 5:
+                log.detail(f"... and {len(unmatched_l2_idxs) - 5} more")
+
+    # Write skipped sentences file for review
+    if book_dir and (unmatched_l1_idxs or unmatched_l2_idxs):
+        lines: list[str] = []
+        lines.append("=== L1 unmatched (kept in output, no L2 match) ===")
+        for i in unmatched_l1_idxs:
+            lines.append(f"[{i}] {l1_texts[i]}")
+        lines.append("")
+        lines.append("=== L2 excluded (no L1 match) ===")
+        for i in unmatched_l2_idxs:
+            lines.append(f"[{i}] {l2_texts[i]}")
+        lines.append("")
+        dump_path = book_dir / "skipped_sentences.txt"
+        tmp = dump_path.with_suffix(".tmp")
+        tmp.write_text("\n".join(lines))
+        tmp.rename(dump_path)
 
     return Alignment(pairs=pairs)

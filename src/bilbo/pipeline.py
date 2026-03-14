@@ -26,7 +26,6 @@ from .models import (
 
 
 STAGE_NAMES = {1: "transcription", 2: "segmentation", 3: "alignment", 4: "export"}
-STAGE_COMMANDS = {1: "transcribe", 2: "segment", 3: "align", 4: "export"}
 
 
 def find_problematic_regions(
@@ -278,7 +277,7 @@ def run_pipeline(
             if s not in meta.stages_completed:
                 raise ValueError(
                     f"Stage {s} ({STAGE_NAMES[s]}) not completed. "
-                    f"Run 'bilbo {STAGE_COMMANDS[s]} \"{title}\"' first."
+                    f"Run 'bilbo process --title \"{title}\" --from {s} --to {s}' first."
                 )
 
     # Stage 1: Transcription
@@ -432,7 +431,7 @@ def run_pipeline(
 
     if force[3] or not align_path.exists():
         from .align import align_texts
-        alignment = align_texts(seg_l1, seg_l2, device=device, log=log)
+        alignment = align_texts(seg_l1, seg_l2, device=device, log=log, book_dir=book_dir)
         alignment.problematic_regions = find_problematic_regions(alignment.pairs)
         alignment.save(align_path)
     else:
@@ -473,11 +472,13 @@ def run_pipeline(
     output_name = f"interleaved.{config.format}"
     output_path = book_dir / "exports" / output_name
 
-    if config.format == "txt":
-        log.stage(4, "Text export")
-        _export_alignment_text(alignment, output_path)
-        log.done(f"Written to {output_path}")
-    else:
+    # Always generate text alignment alongside audio export
+    txt_path = book_dir / "exports" / "interleaved.txt"
+    _export_alignment_text(alignment, txt_path)
+    if "interleaved.txt" not in meta.exports:
+        meta.exports.append("interleaved.txt")
+
+    if force[4] or not output_path.exists():
         log.stage(4, "Assembly")
         from .assemble import assemble
 
@@ -497,6 +498,9 @@ def run_pipeline(
             log=log, metadata=source_metadata, cover_path=cover,
             lang_labels=(l1_label, l2_label),
         )
+    else:
+        log.stage(4, "Assembly")
+        log.skip("cached")
 
     if output_name not in meta.exports:
         meta.exports.append(output_name)
@@ -508,69 +512,3 @@ def run_pipeline(
     return meta
 
 
-def run_export(
-    title: str,
-    config: ExportConfig,
-    library: Library | None = None,
-) -> None:
-    log = PipelineLog()
-    lib = library or Library()
-    meta = lib.find_by_title(title)
-    if meta is None:
-        raise ValueError(f"Book '{title}' not found in library.")
-
-    book_dir = lib.book_dir(meta.slug)
-    align_path = book_dir / "alignment.json"
-
-    if 3 not in meta.stages_completed:
-        raise ValueError(f"Alignment not completed. Run 'bilbo align \"{title}\"' first.")
-    if not align_path.exists():
-        raise ValueError(f"Alignment file missing. Run 'bilbo align \"{title}\"' first.")
-
-    alignment = Alignment.load(align_path)
-    if not alignment.problematic_regions:
-        alignment.problematic_regions = find_problematic_regions(alignment.pairs)
-
-    output_name = f"interleaved.{config.format}"
-    output_path = book_dir / "exports" / output_name
-
-    if config.format == "txt":
-        log.stage(4, "Text export")
-        _export_alignment_text(alignment, output_path)
-        log.done(f"Written to {output_path}")
-    else:
-        l1_audio = Path(meta.l1_audio)
-        l2_audio = Path(meta.l2_audio)
-        if not l1_audio.exists():
-            raise ValueError(f"L1 audio not found: {l1_audio}")
-        if not l2_audio.exists():
-            raise ValueError(f"L2 audio not found: {l2_audio}")
-
-        l1_label = meta.l1_lang.upper()
-        l2_label = meta.l2_lang.upper()
-
-        from .assemble import assemble
-
-        source_metadata, cover = _prepare_metadata(
-            l1_audio, l2_audio, book_dir, False, log,
-            l1_label=l1_label, l2_label=l2_label,
-        )
-
-        # Update author from extracted metadata
-        if source_metadata:
-            l1_m, l2_m = source_metadata
-            if not meta.author:
-                meta.author = l1_m.artist or l2_m.artist
-
-        log.stage(4, "Assembly")
-        assemble(
-            alignment, l1_audio, l2_audio, config, output_path,
-            log=log, metadata=source_metadata, cover_path=cover,
-            lang_labels=(l1_label, l2_label),
-        )
-
-    if output_name not in meta.exports:
-        meta.exports.append(output_name)
-    lib.add_or_update(meta)
-
-    log.summary()

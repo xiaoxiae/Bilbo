@@ -13,14 +13,14 @@ Bilbo is a Python CLI tool that creates bilingual audiobooks by semantically int
 uv sync
 
 # Run CLI
-bilbo process --l1-audio en.mp3 --l2-audio de.mp3 --l1-lang en --l2-lang de --title "Book"
-bilbo transcribe <slug> [--whisper-model] [--device]
-bilbo segment <slug>
-bilbo align <slug> [--device]
-bilbo export <slug> [--intra-gap] [--inter-gap] [--format] [--no-warn-noise] [--no-llm-merge]
+bilbo process --l1-audio en.mp3 --l2-audio de.mp3 --l1 en --l2 de --title "Book"
+bilbo process --title "Book" --from 2 --to 3   # re-run specific stages
 bilbo list
-bilbo info <slug>
-bilbo delete <slug>
+bilbo info <title>
+bilbo rename <title> <new-title>
+bilbo delete <title>
+bilbo help
+bilbo -v
 
 # Tests
 uv run pytest                        # all tests
