@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.3] - 2026-03-14
+
+### Added
+- Ported full Bertalign two-pass alignment algorithm (overlap encoding, anchor DP, m:n second pass with margin scoring) replacing the previous anchor+gap-fill approach (2bd8bc1)
+- GitHub Actions release workflow: auto-publish to PyPI on tag, TestPyPI `.devN` builds on main push (4c79154)
+- Log skipped sentences during alignment (98aab78)
+
+### Changed
+- Cover merging uses vectorized numpy instead of per-row loop (7118f92)
+- `refine_timestamps` reuses a single open `SoundFile` instead of re-reading per segment (7118f92)
+- `find_problematic_regions` uses numpy cumsum for sliding window (7118f92)
+- Deduplicated chapter-finishing logic in `map_chapters_to_output` (7118f92)
+- Fixed `Library.rename` to remap audio paths by directory component, not string replace (7118f92)
+
 ## [0.1.2] - 2026-03-13
 
 ### Added
