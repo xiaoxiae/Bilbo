@@ -12,13 +12,9 @@ https://github.com/user-attachments/assets/aff6c1cb-6f67-43a8-bc9f-3fd6ab3a5c8a
 >
 > **DE:** Der Revolver machte zwar keinen besonders ansehnlichen Eindruck, doch die sechsschüssige Trommel war mit solcher Präzision in den Rahmen aus einer Stahllegierung eingesetzt, dass in ihren Bewegungen nicht das geringste Spiel war.
 
----
-
 > **EN:** There was no gleam to the metal or exotic material on the grip, but it fit his hand like it was meant to be there.
 >
 > **DE:** Das Metall schimmerte nicht und in den Griff waren keinerlei exotische Materialien eingelassen, aber die Waffe lag so gut in seiner Hand, als wäre sie eigens dafür geschaffen worden.
-
----
 
 > **EN:** The waist-high fence was flimsy, the wood grayed with time, held together with fraying lengths of rope.
 >
