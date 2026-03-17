@@ -143,8 +143,11 @@ def export_options(f):
         help="Fade duration applied outside speech (ms)",
     )
     @click.option(
-        "--format", "fmt", type=click.Choice(["m4b", "mp3"]), default="m4b",
-        help="Output audio format"
+        "--format",
+        "fmt",
+        type=click.Choice(["m4b", "mp3"]),
+        default="m4b",
+        help="Output audio format",
     )
     @click.option(
         "--no-warn-noise",
@@ -179,7 +182,6 @@ def _make_export_config(
     )
 
 
-
 COMMAND_ALIASES = {
     "remove": "delete",
     "run": "process",
@@ -212,16 +214,28 @@ def help(ctx):
 
 
 @cli.command()
-@click.argument("l1_audio", type=click.Path(exists=True, path_type=Path), required=False, default=None)
-@click.argument("l2_audio", type=click.Path(exists=True, path_type=Path), required=False, default=None)
+@click.argument(
+    "l1_audio",
+    type=click.Path(exists=True, path_type=Path),
+    required=False,
+    default=None,
+)
+@click.argument(
+    "l2_audio",
+    type=click.Path(exists=True, path_type=Path),
+    required=False,
+    default=None,
+)
 @click.option(
-    "--l1", "l1_lang",
+    "--l1",
+    "l1_lang",
     default=None,
     callback=_validate_lang,
     help="L1 language code (e.g. en); auto-detected if omitted",
 )
 @click.option(
-    "--l2", "l2_lang",
+    "--l2",
+    "l2_lang",
     default=None,
     callback=_validate_lang,
     help="L2 language code (e.g. de); auto-detected if omitted",
@@ -231,11 +245,21 @@ def help(ctx):
     default=None,
     help="Book title (auto-generated from filenames if omitted)",
 )
-@click.option("--from", "from_stage", type=click.IntRange(1, 4), default=None,
-              help="Start from this stage (1=transcribe, 2=segment, 3=align, 4=export)")
-@click.option("--to", "to_stage", type=click.IntRange(1, 4), default=None,
-              help="Stop after this stage (1=transcribe, 2=segment, 3=align, 4=export)")
-@click.option("--whisper-model", default="large-v3-turbo", help="Whisper model size")
+@click.option(
+    "--from",
+    "from_stage",
+    type=click.IntRange(1, 4),
+    default=None,
+    help="Start from this stage (1=transcribe, 2=segment, 3=align, 4=export)",
+)
+@click.option(
+    "--to",
+    "to_stage",
+    type=click.IntRange(1, 4),
+    default=None,
+    help="Stop after this stage (1=transcribe, 2=segment, 3=align, 4=export)",
+)
+@click.option("--whisper-model", default="large-v3", help="Whisper model size")
 @click.option("--device", default="auto", help="Compute device (cpu/cuda/auto)")
 @export_options
 def process(
@@ -355,5 +379,3 @@ def delete(title):
         raise click.ClickException(f"Book '{title}' not found.")
     lib.delete(meta.slug)
     click.echo(f"Deleted '{title}'.")
-
-

@@ -192,7 +192,7 @@ def run_pipeline(
     l1_lang: str | None = None,
     l2_lang: str | None = None,
     title: str | None = None,
-    model_size: str = "large-v3-turbo",
+    model_size: str = "large-v3",
     device: str = "auto",
     export_config: ExportConfig | None = None,
     library: Library | None = None,
@@ -298,22 +298,21 @@ def run_pipeline(
         a.done("Model loaded")
 
         if need_l1 and need_l2:
-            pp = log.parallel([l1_label, l2_label], "Transcribing", unit="s")
+            p = log.progress(f"Transcribing {l1_label}", unit="s")
+            raw_l1, det_l1 = transcribe(
+                l1_audio, l1_lang, model=model,
+                on_progress=p.update,
+            )
+            _save_raw_segments(raw_l1, raw_l1_path)
+            p.finish(f"{len(raw_l1)} segments")
 
-            def _transcribe_and_save(audio_path, lang, out_path, label):
-                segs, detected = transcribe(
-                    audio_path, lang, model=model,
-                    on_progress=pp.callback(label),
-                )
-                _save_raw_segments(segs, out_path)
-                return segs, detected
-
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                f1 = pool.submit(_transcribe_and_save, l1_audio, l1_lang, raw_l1_path, l1_label)
-                f2 = pool.submit(_transcribe_and_save, l2_audio, l2_lang, raw_l2_path, l2_label)
-                raw_l1, det_l1 = f1.result()
-                raw_l2, det_l2 = f2.result()
-            pp.finish(f"{l1_label}: {len(raw_l1)} segments, {l2_label}: {len(raw_l2)} segments")
+            p = log.progress(f"Transcribing {l2_label}", unit="s")
+            raw_l2, det_l2 = transcribe(
+                l2_audio, l2_lang, model=model,
+                on_progress=p.update,
+            )
+            _save_raw_segments(raw_l2, raw_l2_path)
+            p.finish(f"{len(raw_l2)} segments")
         elif need_l1:
             p = log.progress(f"Transcribing {l1_label}", unit="s")
             raw_l1, det_l1 = transcribe(
@@ -390,12 +389,14 @@ def run_pipeline(
             result.save(out_path)
             return result, refine_stats
 
-        def _show_refine_stats(label, stats):
+        def _log_refine_stats(label, stats):
+            parts = []
             if stats["extended"]:
-                log.detail(
-                    f"{label}: extended {stats['extended']}/{stats['total']}"
-                    f" ends (avg +{stats['avg_ms']:.0f}ms)"
-                )
+                parts.append(f"{stats['extended']} extended (avg {stats['avg_extend_ms']:.0f}ms)")
+            if stats["contracted"]:
+                parts.append(f"{stats['contracted']} contracted (avg {stats['avg_contract_ms']:.0f}ms)")
+            if parts:
+                log.detail(f"{label}: refined {stats['adjusted']}/{stats['total']} endpoints — {', '.join(parts)}")
 
         if need_seg_l1 and need_seg_l2:
             act = log.activity("Segmenting...")
@@ -405,20 +406,20 @@ def run_pipeline(
                 seg_l1, stats_l1 = f1.result()
                 seg_l2, stats_l2 = f2.result()
             act.done(f"{l1_label}: {len(seg_l1.sentences)} sentences, {l2_label}: {len(seg_l2.sentences)} sentences")
-            _show_refine_stats(l1_label, stats_l1)
-            _show_refine_stats(l2_label, stats_l2)
+            _log_refine_stats(l1_label, stats_l1)
+            _log_refine_stats(l2_label, stats_l2)
         elif need_seg_l1:
             act = log.activity(f"Segmenting {l1_label}...")
             seg_l1, stats_l1 = _segment_and_save(raw_l1, l1_lang, l1_audio, seg_l1_path)
             act.done(f"{l1_label}: {len(seg_l1.sentences)} sentences")
-            _show_refine_stats(l1_label, stats_l1)
+            _log_refine_stats(l1_label, stats_l1)
             seg_l2 = SegmentedText.load(seg_l2_path)
         else:
             seg_l1 = SegmentedText.load(seg_l1_path)
             act = log.activity(f"Segmenting {l2_label}...")
             seg_l2, stats_l2 = _segment_and_save(raw_l2, l2_lang, l2_audio, seg_l2_path)
             act.done(f"{l2_label}: {len(seg_l2.sentences)} sentences")
-            _show_refine_stats(l2_label, stats_l2)
+            _log_refine_stats(l2_label, stats_l2)
 
     if 2 not in meta.stages_completed:
         meta.stages_completed.append(2)
@@ -518,5 +519,3 @@ def run_pipeline(
 
     log.summary()
     return meta
-
-

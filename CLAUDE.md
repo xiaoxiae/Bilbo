@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Bilbo is a Python CLI tool that creates bilingual audiobooks by semantically interleaving two audiobooks of the same book in different languages. It uses faster-whisper for transcription, pySBD for sentence segmentation, LaBSE embeddings for cross-lingual alignment, and ffmpeg/soundfile for audio assembly.
+Bilbo is a Python CLI tool that creates bilingual audiobooks by semantically interleaving two audiobooks of the same book in different languages. It uses faster-whisper for transcription with word-level timestamps, pySBD for sentence segmentation, LaBSE embeddings for cross-lingual alignment, and ffmpeg/soundfile for audio assembly.
 
 ## Commands
 

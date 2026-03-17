@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -7,7 +8,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pysbd
-import soundfile as sf
 
 from .models import Segment, SegmentedText, Word
 
@@ -81,18 +81,13 @@ def segment_text(
     if log:
         log.info(f"Segmenting {lang}...")
 
-    # Flatten all words from raw segments
-    all_words = []
+    # Per-segment: contain any pySBD quirks to individual segments
+    sentences = []
     for seg in raw_segments:
-        all_words.extend(seg.words)
-
-    if not all_words:
-        # Fallback: if no word-level timestamps, create one word per segment
-        if log:
-            log.warn("no word-level timestamps, using segment-level fallback")
-        all_words = [Word(start=seg.start, end=seg.end, word=seg.text) for seg in raw_segments]
-
-    sentences = _words_to_sentences(all_words, lang)
+        words = seg.words
+        if not words:
+            words = [Word(start=seg.start, end=seg.end, word=seg.text)]
+        sentences.extend(_words_to_sentences(words, lang))
 
     if log:
         log.info(f"{lang}: {len(sentences)} sentences")
@@ -100,97 +95,141 @@ def segment_text(
     return SegmentedText(sentences=sentences)
 
 
-def _decode_to_wav(audio_path: Path) -> Path:
-    """Decode audio to a temp 16kHz mono WAV for fast random-access energy reads."""
-    fd, tmp_path = tempfile.mkstemp(suffix=".wav")
-    import os
+def _decode_to_wav(audio_path: Path) -> tuple[np.ndarray, int]:
+    """Decode audio to 16 kHz mono float32 via ffmpeg, return (samples, sr)."""
+    import soundfile as sf
+
+    fd, tmp = tempfile.mkstemp(suffix=".wav")
     os.close(fd)
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", str(audio_path),
-            "-ar", "16000", "-ac", "1",
-            "-f", "wav", "-acodec", "pcm_f32le",
-            tmp_path,
-        ],
-        capture_output=True,
-        check=True,
-    )
-    return Path(tmp_path)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(audio_path),
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_f32le",
+                tmp,
+            ],
+            capture_output=True,
+            check=True,
+        )
+        data, sr = sf.read(tmp, dtype="float32")
+        return data, sr
+    finally:
+        os.unlink(tmp)
+
+
+def _rms(samples: np.ndarray) -> float:
+    """Root mean square of a sample array."""
+    if len(samples) == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(samples**2)))
 
 
 def refine_timestamps(
     segmented: SegmentedText,
     audio_path: Path,
-    log: PipelineLog | None = None,
-    threshold: float = 0.005,
+    win_ms: int = 30,
+    threshold: float = 0.01,
     max_extend_ms: int = 300,
-    win_ms: int = 10,
+    max_contract_ms: int = 300,
 ) -> tuple[SegmentedText, dict]:
-    """Refine segment end timestamps using energy-based speech boundary detection.
+    """Refine segment end timestamps by scanning for speech/silence boundaries.
 
-    Scans forward from each segment's end in small windows until RMS drops
-    below threshold, extending the end to the actual speech boundary.
+    For each segment end, scans both backward (into the segment) and forward
+    (past the boundary) in ``win_ms`` windows looking for the first silent
+    window (RMS < threshold). Picks whichever boundary is closer to the
+    original end and adjusts accordingly.
 
-    Returns (segmented_text, stats_dict) where stats_dict has keys:
-    extended, total, avg_ms.
+    Returns ``(refined_segmented_text, stats_dict)``.
     """
-    wav_path = _decode_to_wav(audio_path)
-    wav_file = sf.SoundFile(str(wav_path), mode="r")
-    try:
-        sr = wav_file.samplerate
-        total_frames = wav_file.frames
+    samples, sr = _decode_to_wav(audio_path)
+    win_samples = int(sr * win_ms / 1000)
 
-        win_samples = int(sr * win_ms / 1000)
+    adjusted = 0
+    extended = 0
+    contracted = 0
+    extend_deltas: list[float] = []
+    contract_deltas: list[float] = []
+
+    for seg in segmented.sentences:
+        end_sample = int(seg.end * sr)
+        start_sample = int(seg.start * sr)
+
+        # --- backward scan: find where speech ends ---
+        max_contract_samples = int(sr * max_contract_ms / 1000)
+        backward_limit = max(start_sample, end_sample - max_contract_samples)
+        backward_pos: int | None = None
+        pos = end_sample
+        while pos - win_samples >= backward_limit:
+            pos -= win_samples
+            window = samples[pos : pos + win_samples]
+            if _rms(window) >= threshold:
+                # Found speech — boundary is just past this window
+                backward_pos = pos + win_samples
+                break
+
+        # --- forward scan (past boundary) ---
         max_extend_samples = int(sr * max_extend_ms / 1000)
+        forward_limit = min(len(samples), end_sample + max_extend_samples)
+        forward_pos: int | None = None
+        pos = end_sample
+        while pos + win_samples <= forward_limit:
+            window = samples[pos : pos + win_samples]
+            if _rms(window) < threshold:
+                # Found silence — boundary is at start of this window
+                forward_pos = pos
+                break
+            pos += win_samples
 
-        extended_count = 0
-        extensions_ms: list[float] = []
-        for seg in segmented.sentences:
-            end_frame = int(seg.end * sr)
-            scan_end = min(total_frames, end_frame + max_extend_samples)
+        # Discard candidates that don't actually move the boundary
+        if backward_pos is not None and backward_pos == end_sample:
+            backward_pos = None
+        if forward_pos is not None and forward_pos == end_sample:
+            forward_pos = None
 
-            if end_frame >= total_frames or win_samples == 0:
-                continue
+        # Pick the closer boundary
+        best_pos: int | None = None
+        if backward_pos is not None and forward_pos is not None:
+            back_dist = abs(end_sample - backward_pos)
+            fwd_dist = abs(forward_pos - end_sample)
+            best_pos = backward_pos if back_dist <= fwd_dist else forward_pos
+        elif backward_pos is not None:
+            best_pos = backward_pos
+        elif forward_pos is not None:
+            best_pos = forward_pos
 
-            # Read the region we need to scan
-            wav_file.seek(end_frame)
-            data = wav_file.read(scan_end - end_frame, dtype="float32")
-
-            # Scan forward in windows
-            found_silence = False
-            extend_samples = 0
-            for offset in range(0, len(data) - win_samples + 1, win_samples):
-                window = data[offset:offset + win_samples]
-                rms = float(np.sqrt(np.mean(window ** 2)))
-                if rms < threshold:
-                    extend_samples = offset
-                    found_silence = True
-                    break
-
-            if found_silence and extend_samples > 0:
-                extend_sec = extend_samples / sr
-                new_end = round(seg.end + extend_sec, 3)
-                seg.end = new_end
-                if seg.words:
-                    seg.words[-1].end = new_end
-                extended_count += 1
-                extensions_ms.append(extend_sec * 1000)
-
-        total = len(segmented.sentences)
-        avg_ms = (sum(extensions_ms) / len(extensions_ms)) if extensions_ms else 0.0
-        stats = {"extended": extended_count, "total": total, "avg_ms": avg_ms}
-
-        if log:
-            if extended_count > 0:
-                log.info(
-                    f"Extended {extended_count}/{total} segment ends "
-                    f"(avg +{avg_ms:.0f}ms)"
-                )
+        if best_pos is not None:
+            new_end = round(best_pos / sr, 3)
+            delta_ms = (new_end - seg.end) * 1000
+            seg.end = new_end
+            if seg.words:
+                seg.words[-1].end = new_end
+            adjusted += 1
+            if delta_ms > 0:
+                extended += 1
+                extend_deltas.append(delta_ms)
             else:
-                log.info(f"Refined timestamps: 0/{total} segments extended")
+                contracted += 1
+                contract_deltas.append(abs(delta_ms))
 
-    finally:
-        wav_file.close()
-        wav_path.unlink(missing_ok=True)
-
+    total = len(segmented.sentences)
+    stats = {
+        "adjusted": adjusted,
+        "extended": extended,
+        "contracted": contracted,
+        "total": total,
+        "avg_extend_ms": (
+            sum(extend_deltas) / len(extend_deltas) if extend_deltas else 0.0
+        ),
+        "avg_contract_ms": (
+            sum(contract_deltas) / len(contract_deltas) if contract_deltas else 0.0
+        ),
+    }
     return segmented, stats

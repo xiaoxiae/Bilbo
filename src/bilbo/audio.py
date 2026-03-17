@@ -70,31 +70,37 @@ def preprocess_audio(
         text=True,
     )
 
-    # Drain stderr in background to prevent pipe buffer deadlock
-    stderr_result: list[str] = []
-    def _drain_stderr():
-        stderr_result.append(proc.stderr.read() if proc.stderr else "")
-    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
-    stderr_thread.start()
+    try:
+        # Drain stderr in background to prevent pipe buffer deadlock
+        stderr_result: list[str] = []
+        def _drain_stderr():
+            stderr_result.append(proc.stderr.read() if proc.stderr else "")
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
 
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        line = line.strip()
-        if line.startswith("out_time_us="):
-            try:
-                us = int(line.split("=", 1)[1])
-            except ValueError:
-                continue
-            secs = us / 1_000_000
-            if on_progress is not None:
-                on_progress(secs, duration)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.strip()
+            if line.startswith("out_time_us="):
+                try:
+                    us = int(line.split("=", 1)[1])
+                except ValueError:
+                    continue
+                secs = us / 1_000_000
+                if on_progress is not None:
+                    on_progress(secs, duration)
 
-    stderr_thread.join()
-    proc.wait()
-    if proc.returncode != 0:
-        raise subprocess.CalledProcessError(
-            proc.returncode, "ffmpeg", stderr=stderr_result[0] if stderr_result else ""
-        )
+        stderr_thread.join()
+        proc.wait()
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(
+                proc.returncode, "ffmpeg", stderr=stderr_result[0] if stderr_result else ""
+            )
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
 
     return Path(tmp_path)
 
@@ -343,6 +349,7 @@ def _post_process_m4b(
         return
 
     meta_file = None
+    tmp_out = audio_path.with_suffix(".tmp.m4b")
     try:
         inputs = ["-i", str(audio_path)]
         maps = ["-map", "0:a"]
@@ -368,8 +375,8 @@ def _post_process_m4b(
                 lines.append(f"START={ch.start_ms}")
                 lines.append(f"END={ch.end_ms}")
                 lines.append(f"title={ch.title}")
-        os.write(fd, "\n".join(lines).encode("utf-8"))
-        os.close(fd)
+        with os.fdopen(fd, "wb") as f:
+            f.write("\n".join(lines).encode("utf-8"))
         inputs.extend(["-i", meta_path])
         extra.extend(["-map_metadata", str(len(inputs) // 2 - 1)])
 
@@ -394,6 +401,8 @@ def _post_process_m4b(
     finally:
         if meta_file:
             meta_file.unlink(missing_ok=True)
+        if tmp_out.exists():
+            tmp_out.unlink(missing_ok=True)
 
 
 def _post_process_mp3(
@@ -405,19 +414,23 @@ def _post_process_mp3(
     # Cover via ffmpeg remux
     if cover_path:
         tmp_out = audio_path.with_suffix(".tmp.mp3")
-        subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-i", str(audio_path), "-i", str(cover_path),
-                "-map", "0:a", "-map", "1",
-                "-c:a", "copy",
-                "-id3v2_version", "3",
-                str(tmp_out),
-            ],
-            capture_output=True,
-            check=True,
-        )
-        tmp_out.rename(audio_path)
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", str(audio_path), "-i", str(cover_path),
+                    "-map", "0:a", "-map", "1",
+                    "-c:a", "copy",
+                    "-id3v2_version", "3",
+                    str(tmp_out),
+                ],
+                capture_output=True,
+                check=True,
+            )
+            tmp_out.rename(audio_path)
+        except Exception:
+            tmp_out.unlink(missing_ok=True)
+            raise
 
     # Chapters via mutagen ID3
     if chapters:

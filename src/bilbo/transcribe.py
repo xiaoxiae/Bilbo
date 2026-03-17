@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def load_whisper_model(
-    model_size: str = "large-v3-turbo",
+    model_size: str = "large-v3",
     device: str = "cpu",
 ) -> BatchedInferencePipeline:
     from faster_whisper import BatchedInferencePipeline as _BatchedPipeline
@@ -28,7 +28,7 @@ def load_whisper_model(
 def transcribe(
     audio_path: Path,
     lang: str | None = None,
-    model_size: str = "large-v3-turbo",
+    model_size: str = "large-v3",
     device: str = "cpu",
     model: BatchedInferencePipeline | None = None,
     batch_size: int | None = None,

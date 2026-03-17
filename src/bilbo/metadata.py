@@ -117,19 +117,18 @@ def merge_covers(l1_cover: Path, l2_cover: Path, output: Path) -> None:
 
     import numpy as np
 
-    img1 = Image.open(l1_cover)
-    img2 = Image.open(l2_cover)
+    with Image.open(l1_cover) as img1, Image.open(l2_cover) as img2:
+        # Resize both to the same dimensions
+        target_w = min(img1.width, img2.width)
+        target_h = min(img1.height, img2.height)
+        if img1.size != (target_w, target_h):
+            img1 = img1.resize((target_w, target_h), Image.LANCZOS)
+        if img2.size != (target_w, target_h):
+            img2 = img2.resize((target_w, target_h), Image.LANCZOS)
 
-    # Resize both to the same dimensions
-    target_w = min(img1.width, img2.width)
-    target_h = min(img1.height, img2.height)
-    if img1.size != (target_w, target_h):
-        img1 = img1.resize((target_w, target_h), Image.LANCZOS)
-    if img2.size != (target_w, target_h):
-        img2 = img2.resize((target_w, target_h), Image.LANCZOS)
+        arr1 = np.array(img1)
+        arr2 = np.array(img2)
 
-    arr1 = np.array(img1)
-    arr2 = np.array(img2)
     ys = np.arange(target_h)
     cut_xs = (target_w * (1 - ys / target_h)).astype(int)
     xs = np.arange(target_w)

@@ -113,123 +113,119 @@ def assemble(
         l1_wav = f1.result()
         l2_wav = f2.result()
 
-    l1_reader = AudioReader(l1_wav)
-    l2_reader = AudioReader(l2_wav)
     try:
-        sr = l1_reader.sr
-        channels = l1_reader.channels
+        with AudioReader(l1_wav) as l1_reader, AudioReader(l2_wav) as l2_reader:
+            sr = l1_reader.sr
+            channels = l1_reader.channels
 
-        if pp:
-            l1_dur = l1_reader.frames / sr
-            l2_dur = l2_reader.frames / sr
-            pp.finish(f"Preprocessed ({l1_l}: {l1_dur:.0f}s, {l2_l}: {l2_dur:.0f}s)")
+            if pp:
+                l1_dur = l1_reader.frames / sr
+                l2_dur = l2_reader.frames / sr
+                pp.finish(f"Preprocessed ({l1_l}: {l1_dur:.0f}s, {l2_l}: {l2_dur:.0f}s)")
 
-        pairs = alignment.pairs
-        p = log.progress("Assembling") if log else None
+            pairs = alignment.pairs
+            p = log.progress("Assembling") if log else None
 
-        intra_gap = generate_silence(sr, max(0, config.intra_gap_ms - 2 * config.fade_ms), channels)
-        inter_gap = generate_silence(sr, max(0, config.inter_gap_ms - 2 * config.fade_ms), channels)
+            intra_gap = generate_silence(sr, max(0, config.intra_gap_ms - 2 * config.fade_ms), channels)
+            inter_gap = generate_silence(sr, max(0, config.inter_gap_ms - 2 * config.fade_ms), channels)
 
-        first_lang, second_lang = ("l1", "l2")
-        first_reader = l1_reader
-        second_reader = l2_reader
+            first_lang, second_lang = ("l1", "l2")
+            first_reader = l1_reader
+            second_reader = l2_reader
 
-        # Collect LLM-merged metadata (ran in parallel with preprocessing)
-        text_meta: dict[str, str] | None = None
-        if llm_future is not None:
-            text_meta = llm_future.result()
-            if log and text_meta:
-                log.done("Metadata merged via LLM")
-                for k, v in text_meta.items():
-                    log.detail(f"{k}: {v}")
-        elif metadata:
-            l1_meta, l2_meta = metadata
-            text_meta = _build_text_meta(l1_meta, l2_meta, config, None)
+            # Collect LLM-merged metadata (ran in parallel with preprocessing)
+            text_meta: dict[str, str] | None = None
+            if llm_future is not None:
+                text_meta = llm_future.result()
+                if log and text_meta:
+                    log.done("Metadata merged via LLM")
+                    for k, v in text_meta.items():
+                        log.detail(f"{k}: {v}")
+            elif metadata:
+                l1_meta, l2_meta = metadata
+                text_meta = _build_text_meta(l1_meta, l2_meta, config, None)
 
-        pair_offsets_ms: list[tuple[int, int]] = []
+            pair_offsets_ms: list[tuple[int, int]] = []
 
-        # Build warning tone data if enabled
-        region_starts: set[int] = set()
-        region_ends: set[int] = set()
-        tone_gap: np.ndarray | None = None
-        start_tone: np.ndarray | None = None
-        end_tone: np.ndarray | None = None
-        if config.warn_noise and alignment.problematic_regions:
-            for rs, re in alignment.problematic_regions:
-                region_starts.add(rs)
-                region_ends.add(re)
-            tone_gap = generate_silence(sr, TONE_GAP_MS, channels)
-            start_tone = generate_tone(sr, WARN_START_FREQ, WARN_TONE_MS, channels, amplitude=WARN_TONE_AMPLITUDE)
-            end_tone = generate_tone(sr, WARN_END_FREQ, WARN_TONE_MS, channels, amplitude=WARN_TONE_AMPLITUDE)
+            # Build warning tone data if enabled
+            region_starts: set[int] = set()
+            region_ends: set[int] = set()
+            tone_gap: np.ndarray | None = None
+            start_tone: np.ndarray | None = None
+            end_tone: np.ndarray | None = None
+            if config.warn_noise and alignment.problematic_regions:
+                for rs, re in alignment.problematic_regions:
+                    region_starts.add(rs)
+                    region_ends.add(re)
+                tone_gap = generate_silence(sr, TONE_GAP_MS, channels)
+                start_tone = generate_tone(sr, WARN_START_FREQ, WARN_TONE_MS, channels, amplitude=WARN_TONE_AMPLITUDE)
+                end_tone = generate_tone(sr, WARN_END_FREQ, WARN_TONE_MS, channels, amplitude=WARN_TONE_AMPLITUDE)
 
-        with AudioExporter(sr, channels, output_path, config.format, metadata=text_meta) as exporter:
-            for pi, pair in enumerate(pairs):
-                start_ms = int(exporter.total_samples * 1000 / sr)
+            with AudioExporter(sr, channels, output_path, config.format, metadata=text_meta) as exporter:
+                for pi, pair in enumerate(pairs):
+                    start_ms = int(exporter.total_samples * 1000 / sr)
 
-                if pi in region_starts:
-                    assert start_tone is not None and tone_gap is not None
-                    exporter.write(start_tone)
-                    exporter.write(tone_gap)
+                    if pi in region_starts:
+                        assert start_tone is not None and tone_gap is not None
+                        exporter.write(start_tone)
+                        exporter.write(tone_gap)
 
-                chunk1 = apply_fade(_extract_chunk(pair, first_reader, first_lang, config), sr, config.fade_ms)
-                chunk2 = apply_fade(_extract_chunk(pair, second_reader, second_lang, config), sr, config.fade_ms)
+                    chunk1 = apply_fade(_extract_chunk(pair, first_reader, first_lang, config), sr, config.fade_ms)
+                    chunk2 = apply_fade(_extract_chunk(pair, second_reader, second_lang, config), sr, config.fade_ms)
 
-                if len(chunk1) > 0:
-                    exporter.write(chunk1)
-                if len(chunk1) > 0 and len(chunk2) > 0:
-                    exporter.write(intra_gap)
-                if len(chunk2) > 0:
-                    exporter.write(chunk2)
+                    if len(chunk1) > 0:
+                        exporter.write(chunk1)
+                    if len(chunk1) > 0 and len(chunk2) > 0:
+                        exporter.write(intra_gap)
+                    if len(chunk2) > 0:
+                        exporter.write(chunk2)
 
-                if pi in region_ends:
-                    assert end_tone is not None and tone_gap is not None
-                    exporter.write(tone_gap)
-                    exporter.write(end_tone)
+                    if pi in region_ends:
+                        assert end_tone is not None and tone_gap is not None
+                        exporter.write(tone_gap)
+                        exporter.write(end_tone)
 
-                if pi < len(pairs) - 1:
-                    exporter.write(inter_gap)
+                    if pi < len(pairs) - 1:
+                        exporter.write(inter_gap)
 
-                end_ms = int(exporter.total_samples * 1000 / sr)
-                pair_offsets_ms.append((start_ms, end_ms))
+                    end_ms = int(exporter.total_samples * 1000 / sr)
+                    pair_offsets_ms.append((start_ms, end_ms))
 
-                if p:
-                    p.update(pi + 1, len(pairs))
+                    if p:
+                        p.update(pi + 1, len(pairs))
 
-        if exporter.total_samples == 0:
-            if log:
-                log.warn("no audio content to assemble")
-            return
+            if exporter.total_samples == 0:
+                if log:
+                    log.warn("no audio content to assemble")
+                return
 
-        if p:
-            p.finish(f"{exporter.duration / 60:.1f} minutes")
+            if p:
+                p.finish(f"{exporter.duration / 60:.1f} minutes")
 
-        # Post-process: embed cover art and chapters
-        out_file = output_path.with_suffix(f".{config.format}")
-        need_cover = cover_path and cover_path.exists()
-        need_chapters = metadata and (
-            metadata[0].chapters or metadata[1].chapters
-        )
-
-        if need_cover or need_chapters:
-            mapped_chapters: list[ChapterMarker] | None = None
-            if need_chapters:
-                from .metadata import map_chapters_to_output
-                l1_meta, l2_meta = metadata  # type: ignore[misc]
-                mapped_chapters = map_chapters_to_output(
-                    l1_meta.chapters, l2_meta.chapters,
-                    alignment, pair_offsets_ms,
-                    llm_merge=config.llm_merge,
-                )
-                if log and mapped_chapters:
-                    log.done(f"{len(mapped_chapters)} output chapters")
-            post_process_metadata(
-                out_file,
-                cover_path=cover_path if need_cover else None,
-                chapters=mapped_chapters,
+            # Post-process: embed cover art and chapters
+            out_file = output_path.with_suffix(f".{config.format}")
+            need_cover = cover_path and cover_path.exists()
+            need_chapters = metadata and (
+                metadata[0].chapters or metadata[1].chapters
             )
 
+            if need_cover or need_chapters:
+                mapped_chapters: list[ChapterMarker] | None = None
+                if need_chapters:
+                    from .metadata import map_chapters_to_output
+                    l1_meta, l2_meta = metadata  # type: ignore[misc]
+                    mapped_chapters = map_chapters_to_output(
+                        l1_meta.chapters, l2_meta.chapters,
+                        alignment, pair_offsets_ms,
+                        llm_merge=config.llm_merge,
+                    )
+                    if log and mapped_chapters:
+                        log.done(f"{len(mapped_chapters)} output chapters")
+                post_process_metadata(
+                    out_file,
+                    cover_path=cover_path if need_cover else None,
+                    chapters=mapped_chapters,
+                )
     finally:
-        l1_reader.close()
-        l2_reader.close()
         l1_wav.unlink(missing_ok=True)
         l2_wav.unlink(missing_ok=True)
