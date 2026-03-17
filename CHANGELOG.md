@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.4] - 2026-03-17
+
+### Added
+- Numeric IDs in `bilbo list` output; all commands now accept a numeric ID instead of a title (e.g., `bilbo info 1`) (f9138b0)
+- Command aliases: `remove` → `delete`, `run` → `process` (f9138b0)
+- `bilbo help` command (89936d2)
+- Live VAD progress (`EN VAD: 47%`) during segmentation stage using Silero's `progress_tracking_callback` (bb266b8)
+
+### Changed
+- `bilbo process` audio arguments are now optional to allow re-running stages via `--from`/`--to` without re-specifying audio files (89936d2)
+- Removed per-stage CLI commands (`bilbo transcribe`, `bilbo segment`, `bilbo align`, `bilbo export`) in favour of `bilbo process --from N --to N` (89936d2)
+- Default Whisper model changed from `large-v3-turbo` to `large-v3` (4ce3820)
+- Transcription now runs sequentially (L1 then L2) rather than in parallel; a single shared model cannot run concurrently (4ce3820)
+- `refine_timestamps` now uses ownership-based VAD matching: a speech region is assigned to the segment that contains >50% of its duration, and both `.start` and `.end` are snapped to the matched regions' extremes with ±50 ms padding (bb266b8)
+
+### Fixed
+- Assembly no longer redundantly reopens audio files for each pair (23c6729)
+
 ## [0.1.3] - 2026-03-14
 
 ### Added

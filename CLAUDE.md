@@ -13,12 +13,12 @@ Bilbo is a Python CLI tool that creates bilingual audiobooks by semantically int
 uv sync
 
 # Run CLI
-bilbo process --l1-audio en.mp3 --l2-audio de.mp3 --l1 en --l2 de --title "Book"
+bilbo process en.mp3 de.mp3 --title "Book"     # full pipeline
 bilbo process --title "Book" --from 2 --to 3   # re-run specific stages
 bilbo list
-bilbo info <title>
-bilbo rename <title> <new-title>
-bilbo delete <title>
+bilbo info <title|id>
+bilbo rename <title|id> <new-title>
+bilbo delete <title|id>
 bilbo help
 bilbo -v
 
@@ -34,7 +34,7 @@ uv run pytest tests/test_segment.py  # single file
 4-stage sequential pipeline orchestrated by `pipeline.py`, each producing JSON intermediates in `~/.bilbo/books/{slug}/`:
 
 1. **Transcription** (`transcribe.py`) — faster-whisper STT with word-level timestamps → `raw_segments_l{1,2}.json`
-2. **Segmentation** (`segment.py`) — Flattens all words, re-segments into sentences via pySBD with char-span mapping → `segments_l{1,2}.json`
+2. **Segmentation** (`segment.py`) — Flattens all words, re-segments into sentences via pySBD with char-span mapping; then refines both `.start` and `.end` of each sentence using Silero VAD (ownership-based: VAD region assigned to segment containing >50% of its duration, snapped with ±50 ms padding) → `segments_l{1,2}.json`
 3. **Alignment** (`align.py`) — Two-pass algorithm: first finds high-confidence anchor pairs (LaBSE cosine similarity), then fills gaps between anchors with m:n dynamic programming (supports up to 3:3 groupings) → `alignment.json`
 4. **Assembly** (`assemble.py`) — Preprocesses audio (resample + LUFS normalize via ffmpeg), extracts chunks per alignment pair, interleaves with gaps/crossfades, streams PCM to ffmpeg encoder → `exports/interleaved.{m4b,mp3,txt}`
 

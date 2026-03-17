@@ -63,8 +63,8 @@ which runs the full pipeline (transcribe, segment, align, export) and stores res
 
 ── Stage 2: Segmentation ─────────────────────────
   ✓ EN: 63 sentences, DE: 64 sentences
-    EN: extended 54/63 ends (avg +141ms)
-    DE: extended 57/64 ends (avg +80ms)
+    EN: refined 54/63 endpoints via VAD — 54 extended (avg 91ms)
+    DE: refined 57/64 endpoints via VAD — 57 extended (avg 30ms)
 
 ── Stage 3: Alignment ────────────────────────────
   ✓ LaBSE model loaded  (cuda)
@@ -108,7 +108,7 @@ bilbo delete <title>                # Delete a book
 ## How it works
 
 1. **Transcription** — Speech-to-text via [faster-whisper](https://github.com/SYSTRAN/faster-whisper) with word-level timestamps
-2. **Segmentation** — Sentence boundary detection via [pySBD](https://github.com/nipunsadvilkar/pySBD)
+2. **Segmentation** — Sentence boundary detection via [pySBD](https://github.com/nipunsadvilkar/pySBD); start/end timestamps refined using [Silero VAD](https://github.com/snakers4/silero-vad) speech regions
 3. **Alignment** — Cross-lingual sentence matching using [LaBSE](https://huggingface.co/sentence-transformers/LaBSE) embeddings via [sentence-transformers](https://github.com/UKPLab/sentence-transformers)
 4. **Assembly** — Audio normalization/extraction/interleaving via [ffmpeg](https://www.ffmpeg.org/)
 5. **Metadata** — Cover art + text metadata merging (optionally via local LLM with [ollama](https://ollama.com/))
