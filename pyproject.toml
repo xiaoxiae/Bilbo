@@ -20,6 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "faster-whisper",
+    "silero-vad",
     "pysbd",
     "sentence-transformers",
     "click",
@@ -34,7 +35,7 @@ cpu = ["torch"]
 cuda = []
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "matplotlib"]
 
 [project.scripts]
 bilbo = "bilbo.cli:cli"

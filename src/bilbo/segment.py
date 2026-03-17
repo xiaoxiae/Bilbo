@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -125,111 +126,96 @@ def _decode_to_wav(audio_path: Path) -> tuple[np.ndarray, int]:
         os.unlink(tmp)
 
 
-def _rms(samples: np.ndarray) -> float:
-    """Root mean square of a sample array."""
-    if len(samples) == 0:
-        return 0.0
-    return float(np.sqrt(np.mean(samples**2)))
+_VAD_PADDING = 0.05  # 50 ms guard on each side of matched speech region
 
 
 def refine_timestamps(
     segmented: SegmentedText,
     audio_path: Path,
-    win_ms: int = 30,
-    threshold: float = 0.01,
-    max_extend_ms: int = 300,
-    max_contract_ms: int = 300,
+    on_progress: Callable[[float, float | None], None] | None = None,
+    _vad_result: list[dict[str, float]] | None = None,
 ) -> tuple[SegmentedText, dict]:
-    """Refine segment end timestamps by scanning for speech/silence boundaries.
+    """Refine each segment's start and end using Silero VAD (ownership-based).
 
-    For each segment end, scans both backward (into the segment) and forward
-    (past the boundary) in ``win_ms`` windows looking for the first silent
-    window (RMS < threshold). Picks whichever boundary is closer to the
-    original end and adjusts accordingly.
+    Each VAD speech region is assigned to the segment that contains more than
+    50% of the region's duration.  Both .start and .end are then snapped to
+    the extremes of the matched regions, with ±50 ms padding and clamped to
+    the adjacent segment boundaries.
+
+    Pass ``_vad_result`` directly to skip VAD inference (used in tests).
 
     Returns ``(refined_segmented_text, stats_dict)``.
     """
-    samples, sr = _decode_to_wav(audio_path)
-    win_samples = int(sr * win_ms / 1000)
+    sents = segmented.sentences
+    if not sents:
+        return segmented, {
+            "adjusted": 0, "extended": 0, "contracted": 0,
+            "total": 0, "avg_extend_ms": 0.0, "avg_contract_ms": 0.0,
+        }
+
+    # Get VAD speech regions
+    if _vad_result is not None:
+        speech_regions = _vad_result
+    else:
+        import torch
+        from silero_vad import get_speech_timestamps, load_silero_vad
+
+        samples, sr = _decode_to_wav(audio_path)
+        model = load_silero_vad()
+        tensor = torch.from_numpy(samples)
+        vad_cb = (lambda pct: on_progress(pct, None)) if on_progress else None
+        speech_regions = get_speech_timestamps(
+            tensor, model, sampling_rate=sr, return_seconds=True,
+            progress_tracking_callback=vad_cb,
+        )
 
     adjusted = 0
-    extended = 0
-    contracted = 0
-    extend_deltas: list[float] = []
-    contract_deltas: list[float] = []
+    deltas: list[float] = []
 
-    for seg in segmented.sentences:
-        end_sample = int(seg.end * sr)
-        start_sample = int(seg.start * sr)
+    for i, seg in enumerate(sents):
+        prev_end = sents[i - 1].end if i > 0 else 0.0
+        next_start = sents[i + 1].start if i < len(sents) - 1 else float("inf")
 
-        # --- backward scan: find where speech ends ---
-        max_contract_samples = int(sr * max_contract_ms / 1000)
-        backward_limit = max(start_sample, end_sample - max_contract_samples)
-        backward_pos: int | None = None
-        pos = end_sample
-        while pos - win_samples >= backward_limit:
-            pos -= win_samples
-            window = samples[pos : pos + win_samples]
-            if _rms(window) >= threshold:
-                # Found speech — boundary is just past this window
-                backward_pos = pos + win_samples
-                break
+        # Ownership: keep VAD regions where >50% of their duration falls inside seg
+        matched = []
+        for region in speech_regions:
+            r_start, r_end = region["start"], region["end"]
+            dur = r_end - r_start
+            if dur <= 0:
+                continue
+            overlap = max(0.0, min(r_end, seg.end) - max(r_start, seg.start))
+            if overlap / dur > 0.5:
+                matched.append(region)
 
-        # --- forward scan (past boundary) ---
-        max_extend_samples = int(sr * max_extend_ms / 1000)
-        forward_limit = min(len(samples), end_sample + max_extend_samples)
-        forward_pos: int | None = None
-        pos = end_sample
-        while pos + win_samples <= forward_limit:
-            window = samples[pos : pos + win_samples]
-            if _rms(window) < threshold:
-                # Found silence — boundary is at start of this window
-                forward_pos = pos
-                break
-            pos += win_samples
+        if not matched:
+            continue
 
-        # Discard candidates that don't actually move the boundary
-        if backward_pos is not None and backward_pos == end_sample:
-            backward_pos = None
-        if forward_pos is not None and forward_pos == end_sample:
-            forward_pos = None
+        new_start = max(min(r["start"] for r in matched) - _VAD_PADDING, prev_end)
+        new_end = min(max(r["end"] for r in matched) + _VAD_PADDING, next_start)
 
-        # Pick the closer boundary
-        best_pos: int | None = None
-        if backward_pos is not None and forward_pos is not None:
-            back_dist = abs(end_sample - backward_pos)
-            fwd_dist = abs(forward_pos - end_sample)
-            best_pos = backward_pos if back_dist <= fwd_dist else forward_pos
-        elif backward_pos is not None:
-            best_pos = backward_pos
-        elif forward_pos is not None:
-            best_pos = forward_pos
+        seg.start = new_start
+        if seg.words:
+            seg.words[0].start = new_start
 
-        if best_pos is not None:
-            new_end = round(best_pos / sr, 3)
-            delta_ms = (new_end - seg.end) * 1000
-            seg.end = new_end
-            if seg.words:
-                seg.words[-1].end = new_end
+        if new_end != seg.end:
+            deltas.append((new_end - seg.end) * 1000)
             adjusted += 1
-            if delta_ms > 0:
-                extended += 1
-                extend_deltas.append(delta_ms)
-            else:
-                contracted += 1
-                contract_deltas.append(abs(delta_ms))
+        seg.end = new_end
+        if seg.words:
+            seg.words[-1].end = new_end
 
-    total = len(segmented.sentences)
+    extended = sum(1 for d in deltas if d > 0)
+    contracted = sum(1 for d in deltas if d < 0)
     stats = {
         "adjusted": adjusted,
         "extended": extended,
         "contracted": contracted,
-        "total": total,
+        "total": len(sents),
         "avg_extend_ms": (
-            sum(extend_deltas) / len(extend_deltas) if extend_deltas else 0.0
+            sum(d for d in deltas if d > 0) / extended if extended else 0.0
         ),
         "avg_contract_ms": (
-            sum(contract_deltas) / len(contract_deltas) if contract_deltas else 0.0
+            sum(abs(d) for d in deltas if d < 0) / contracted if contracted else 0.0
         ),
     }
     return segmented, stats

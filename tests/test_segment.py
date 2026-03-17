@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import soundfile as sf
 
 from bilbo.models import Segment, SegmentedText, Word
@@ -65,86 +66,127 @@ def _make_wav(tmp_path, duration_s, regions):
     return path
 
 
-def test_refine_forward_extension(tmp_path):
-    """Segment end is mid-speech — should extend forward to silence boundary."""
-    # Speech from 0.0–0.5, silence from 0.5 onward.
-    # Segment end at 0.4 (mid-speech) should extend forward to ~0.5.
-    wav = _make_wav(tmp_path, 1.0, [(0.0, 0.5, 0.5)])
-    seg = Segment(start=0.0, end=0.4, text="hello", words=[Word(0.0, 0.4, "hello")])
-    st = SegmentedText(sentences=[seg])
+def test_refine_trims_trailing_silence(tmp_path):
+    """VAD speech ends before seg.end → trim to speech end + 50ms padding."""
+    wav = _make_wav(tmp_path, 2.0, [])
+    segs = SegmentedText(sentences=[
+        Segment(start=0.0, end=0.8, text="hello", words=[Word(0.0, 0.8, "hello")]),
+        Segment(start=1.0, end=1.5, text="world", words=[Word(1.0, 1.5, "world")]),
+    ])
+    vad = [{"start": 0.0, "end": 0.5}, {"start": 1.0, "end": 1.5}]
 
-    refined, stats = refine_timestamps(st, wav, win_ms=30, threshold=0.01)
-    assert stats["adjusted"] == 1
-    assert stats["extended"] == 1
-    assert stats["contracted"] == 0
-    # End should have moved forward (extended)
-    assert refined.sentences[0].end > 0.4
-    assert refined.sentences[0].end <= 0.55  # roughly at the silence boundary
-
-
-def test_refine_backward_contraction(tmp_path):
-    """Segment end is past speech in silence — should contract backward."""
-    # Speech from 0.0–0.3, silence from 0.3 onward.
-    # Segment end at 0.5 (well into silence) should contract back to ~0.3.
-    wav = _make_wav(tmp_path, 1.0, [(0.0, 0.3, 0.5)])
-    seg = Segment(start=0.0, end=0.5, text="hello", words=[Word(0.0, 0.5, "hello")])
-    st = SegmentedText(sentences=[seg])
-
-    refined, stats = refine_timestamps(st, wav, win_ms=30, threshold=0.01)
-    assert stats["adjusted"] == 1
+    refined, stats = refine_timestamps(segs, wav, _vad_result=vad)
+    assert refined.sentences[0].end == pytest.approx(0.55)
+    assert refined.sentences[0].words[-1].end == pytest.approx(0.55)
+    assert refined.sentences[0].start == pytest.approx(0.0)  # clamped at prev_end=0
     assert stats["contracted"] == 1
-    assert stats["extended"] == 0
-    # End should have moved backward (contracted)
-    assert refined.sentences[0].end < 0.5
-    assert refined.sentences[0].end >= 0.25  # roughly at the speech boundary
 
 
-def test_refine_bidirectional_picks_closer(tmp_path):
-    """When both directions find silence, pick the closer boundary."""
-    # Speech 0.0–0.3, silence 0.3–0.4, speech 0.4–0.7, silence 0.7+
-    # Segment end at 0.35 (in the silence gap). Backward finds ~0.3 (dist 0.05),
-    # forward finds ~0.4... but 0.4 is speech so forward scan continues to 0.7.
-    # Backward at ~0.3 is closer, so it should contract.
-    wav = _make_wav(tmp_path, 1.0, [(0.0, 0.3, 0.5), (0.4, 0.7, 0.5)])
-    seg = Segment(start=0.0, end=0.35, text="hello", words=[Word(0.0, 0.35, "hello")])
-    st = SegmentedText(sentences=[seg])
+def test_refine_extends_to_actual_speech_end(tmp_path):
+    """VAD speech ends after seg.end → extend with 50ms padding."""
+    wav = _make_wav(tmp_path, 2.0, [])
+    segs = SegmentedText(sentences=[
+        Segment(start=0.0, end=0.4, text="hello", words=[Word(0.0, 0.4, "hello")]),
+        Segment(start=1.0, end=1.5, text="world", words=[Word(1.0, 1.5, "world")]),
+    ])
+    # Only provide VAD for the first segment so the count is unambiguous
+    vad = [{"start": 0.0, "end": 0.5}]
 
-    refined, stats = refine_timestamps(st, wav, win_ms=30, threshold=0.01)
-    assert stats["adjusted"] == 1
-    # Should have contracted (backward boundary was closer)
-    assert refined.sentences[0].end < 0.35
+    refined, stats = refine_timestamps(segs, wav, _vad_result=vad)
+    assert refined.sentences[0].end == pytest.approx(0.55)
+    assert refined.sentences[0].words[-1].end == pytest.approx(0.55)
+    assert stats["extended"] == 1
 
 
-def test_refine_no_change_when_at_silence(tmp_path):
-    """No adjustment when segment end is already at silence boundary."""
-    # Speech 0.0–0.5, silence 0.5+. Segment end exactly at 0.5.
-    # Both backward (first window at 0.47–0.5 is speech) and forward (0.5–0.53
-    # is silence) find boundaries. Forward is right at 0.5 (distance 0),
-    # so effectively no change.
-    wav = _make_wav(tmp_path, 1.0, [(0.0, 0.5, 0.5)])
-    seg = Segment(start=0.0, end=0.5, text="hello", words=[Word(0.0, 0.5, "hello")])
-    st = SegmentedText(sentences=[seg])
+def test_refine_clamps_at_next_start(tmp_path):
+    """VAD speech spans into next segment → clamp at next_seg.start."""
+    wav = _make_wav(tmp_path, 2.0, [])
+    segs = SegmentedText(sentences=[
+        Segment(start=0.0, end=0.8, text="hello", words=[Word(0.0, 0.8, "hello")]),
+        Segment(start=1.0, end=1.5, text="world", words=[Word(1.0, 1.5, "world")]),
+    ])
+    # VAD region spans across boundary; 0.8/1.2 = 67% inside seg[0] → matched
+    vad = [{"start": 0.0, "end": 1.2}]
 
-    refined, stats = refine_timestamps(st, wav, win_ms=30, threshold=0.01)
-    # The forward scan finds silence immediately, so adjustment is 0 or tiny
-    assert abs(refined.sentences[0].end - 0.5) <= 0.03
+    refined, _ = refine_timestamps(segs, wav, _vad_result=vad)
+    assert refined.sentences[0].end == 1.0  # clamped to next_seg.start
+
+
+def test_refine_also_refines_start(tmp_path):
+    """VAD region matched → start also snaps to vad_start - 50ms padding."""
+    wav = _make_wav(tmp_path, 2.0, [])
+    segs = SegmentedText(sentences=[
+        Segment(start=0.1, end=0.8, text="hello", words=[Word(0.1, 0.8, "hello")]),
+        Segment(start=1.0, end=1.5, text="world", words=[Word(1.0, 1.5, "world")]),
+    ])
+    # VAD[0.2,0.6]: overlap with seg[0.1,0.8] = 0.4, dur=0.4, frac=1.0 → matched
+    vad = [{"start": 0.2, "end": 0.6}, {"start": 1.0, "end": 1.5}]
+
+    refined, _ = refine_timestamps(segs, wav, _vad_result=vad)
+    assert refined.sentences[0].start == pytest.approx(0.15)  # 0.2 - 0.05, clamped at 0.0
+    assert refined.sentences[0].words[0].start == pytest.approx(0.15)
+
+
+def test_refine_no_match_leaves_unchanged(tmp_path):
+    """VAD region overlaps < 50% of its duration with segment → no change."""
+    wav = _make_wav(tmp_path, 2.0, [])
+    segs = SegmentedText(sentences=[
+        Segment(start=0.0, end=0.5, text="hello", words=[Word(0.0, 0.5, "hello")]),
+    ])
+    # VAD[0.4,0.9]: overlap with seg[0,0.5] = 0.1, dur=0.5, frac=0.2 < 0.5 → no match
+    vad = [{"start": 0.4, "end": 0.9}]
+
+    refined, stats = refine_timestamps(segs, wav, _vad_result=vad)
+    assert refined.sentences[0].start == 0.0
+    assert refined.sentences[0].end == 0.5
+    assert stats["adjusted"] == 0
+
+
+def test_refine_last_segment_uses_vad_end(tmp_path):
+    """Last segment has no upper bound → end = vad_end + 50ms padding."""
+    wav = _make_wav(tmp_path, 2.0, [])
+    segs = SegmentedText(sentences=[
+        Segment(start=0.0, end=0.5, text="hello", words=[Word(0.0, 0.5, "hello")]),
+        Segment(start=1.0, end=1.8, text="world", words=[Word(1.0, 1.8, "world")]),
+    ])
+    vad = [{"start": 0.0, "end": 0.4}, {"start": 1.0, "end": 1.5}]
+
+    refined, _ = refine_timestamps(segs, wav, _vad_result=vad)
+    assert refined.sentences[1].end == pytest.approx(1.55)
+
+
+def test_refine_no_vad_regions_no_change(tmp_path):
+    """Empty VAD result → all endpoints unchanged."""
+    wav = _make_wav(tmp_path, 2.0, [])
+    segs = SegmentedText(sentences=[
+        Segment(start=0.0, end=0.5, text="hello", words=[Word(0.0, 0.5, "hello")]),
+        Segment(start=1.0, end=1.5, text="world", words=[Word(1.0, 1.5, "world")]),
+    ])
+
+    refined, stats = refine_timestamps(segs, wav, _vad_result=[])
+    assert refined.sentences[0].end == 0.5
+    assert refined.sentences[1].end == 1.5
+    assert stats["adjusted"] == 0
 
 
 def test_refine_stats_correctness(tmp_path):
-    """Stats dict has correct structure and values for multiple segments."""
-    # Two segments: one will extend, one will contract.
-    # Seg1: speech 0.0–0.5, end at 0.4 → extend forward
-    # Seg2: speech 0.6–0.8, end at 0.95 → contract backward
-    wav = _make_wav(tmp_path, 1.5, [(0.0, 0.5, 0.5), (0.6, 0.8, 0.5)])
+    """Stats dict has correct structure and values."""
+    wav = _make_wav(tmp_path, 3.0, [])
     segs = SegmentedText(sentences=[
+        # end=0.4, VAD=[0,0.5] → new_end=0.55, extended
         Segment(start=0.0, end=0.4, text="hello", words=[Word(0.0, 0.4, "hello")]),
-        Segment(start=0.6, end=0.95, text="world", words=[Word(0.6, 0.95, "world")]),
+        # end=1.8, VAD=[1.0,1.5] → new_end=1.55, contracted
+        Segment(start=1.0, end=1.8, text="world", words=[Word(1.0, 1.8, "world")]),
+        # end=2.5, VAD=[2.0,2.45] → new_end=2.5, end unchanged
+        Segment(start=2.0, end=2.5, text="bye", words=[Word(2.0, 2.5, "bye")]),
     ])
+    vad = [{"start": 0.0, "end": 0.5}, {"start": 1.0, "end": 1.5}, {"start": 2.0, "end": 2.45}]
 
-    _, stats = refine_timestamps(segs, wav, win_ms=30, threshold=0.01)
-    assert stats["total"] == 2
+    _, stats = refine_timestamps(segs, wav, _vad_result=vad)
+    assert stats["total"] == 3
     assert stats["adjusted"] == 2
-    assert stats["extended"] + stats["contracted"] == 2
-    assert stats["avg_extend_ms"] >= 0
-    assert stats["avg_contract_ms"] >= 0
+    assert stats["extended"] == 1
+    assert stats["contracted"] == 1
+    assert stats["avg_extend_ms"] > 0
+    assert stats["avg_contract_ms"] > 0
     assert set(stats.keys()) == {"adjusted", "extended", "contracted", "total", "avg_extend_ms", "avg_contract_ms"}

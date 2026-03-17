@@ -383,9 +383,9 @@ def run_pipeline(
     else:
         from .segment import refine_timestamps, segment_text
 
-        def _segment_and_save(raw_segs, lang, audio, out_path):
+        def _segment_and_save(raw_segs, lang, audio, out_path, on_progress=None):
             result = segment_text(raw_segs, lang)
-            result, refine_stats = refine_timestamps(result, audio)
+            result, refine_stats = refine_timestamps(result, audio, on_progress=on_progress)
             result.save(out_path)
             return result, refine_stats
 
@@ -396,29 +396,29 @@ def run_pipeline(
             if stats["contracted"]:
                 parts.append(f"{stats['contracted']} contracted (avg {stats['avg_contract_ms']:.0f}ms)")
             if parts:
-                log.detail(f"{label}: refined {stats['adjusted']}/{stats['total']} endpoints — {', '.join(parts)}")
+                log.detail(f"{label}: refined {stats['adjusted']}/{stats['total']} endpoints via VAD — {', '.join(parts)}")
 
         if need_seg_l1 and need_seg_l2:
-            act = log.activity("Segmenting...")
+            pp = log.parallel([l1_label, l2_label], "VAD", unit="%")
             with ThreadPoolExecutor(max_workers=2) as pool:
-                f1 = pool.submit(_segment_and_save, raw_l1, l1_lang, l1_audio, seg_l1_path)
-                f2 = pool.submit(_segment_and_save, raw_l2, l2_lang, l2_audio, seg_l2_path)
+                f1 = pool.submit(_segment_and_save, raw_l1, l1_lang, l1_audio, seg_l1_path, pp.callback(l1_label))
+                f2 = pool.submit(_segment_and_save, raw_l2, l2_lang, l2_audio, seg_l2_path, pp.callback(l2_label))
                 seg_l1, stats_l1 = f1.result()
                 seg_l2, stats_l2 = f2.result()
-            act.done(f"{l1_label}: {len(seg_l1.sentences)} sentences, {l2_label}: {len(seg_l2.sentences)} sentences")
+            pp.finish(f"{l1_label}: {len(seg_l1.sentences)} sentences, {l2_label}: {len(seg_l2.sentences)} sentences")
             _log_refine_stats(l1_label, stats_l1)
             _log_refine_stats(l2_label, stats_l2)
         elif need_seg_l1:
-            act = log.activity(f"Segmenting {l1_label}...")
-            seg_l1, stats_l1 = _segment_and_save(raw_l1, l1_lang, l1_audio, seg_l1_path)
-            act.done(f"{l1_label}: {len(seg_l1.sentences)} sentences")
+            p = log.progress(f"VAD {l1_label}", unit="%")
+            seg_l1, stats_l1 = _segment_and_save(raw_l1, l1_lang, l1_audio, seg_l1_path, p.update)
+            p.finish(f"{l1_label}: {len(seg_l1.sentences)} sentences")
             _log_refine_stats(l1_label, stats_l1)
             seg_l2 = SegmentedText.load(seg_l2_path)
         else:
             seg_l1 = SegmentedText.load(seg_l1_path)
-            act = log.activity(f"Segmenting {l2_label}...")
-            seg_l2, stats_l2 = _segment_and_save(raw_l2, l2_lang, l2_audio, seg_l2_path)
-            act.done(f"{l2_label}: {len(seg_l2.sentences)} sentences")
+            p = log.progress(f"VAD {l2_label}", unit="%")
+            seg_l2, stats_l2 = _segment_and_save(raw_l2, l2_lang, l2_audio, seg_l2_path, p.update)
+            p.finish(f"{l2_label}: {len(seg_l2.sentences)} sentences")
             _log_refine_stats(l2_label, stats_l2)
 
     if 2 not in meta.stages_completed:
